@@ -1,0 +1,1649 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Doom Core</title>
+<style>
+:root{--bg:#080b12;--p:#111722;--p2:#161e2b;--b:#293448;--t:#e8edf6;--m:#8d9aaf;--a:#7c6cff;--g:#45d17d;--w:#ffb74d;--r:#ff6b7d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:14px Segoe UI,Arial,sans-serif}
+.wrap{max-width:1450px;margin:auto;padding:22px}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;gap:16px}
+.topRight{display:flex;gap:10px;align-items:center}h1{margin:0;font-size:24px}small,.muted{color:var(--m)}.badge{border:1px solid var(--b);padding:7px 10px;border-radius:999px}
+.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}.tabs button{background:var(--p);border:1px solid var(--b);color:var(--t);padding:8px 12px;border-radius:10px;cursor:pointer}
+.tabs button.on{background:var(--a);border-color:var(--a)}.card{background:var(--p);border:1px solid var(--b);border-radius:14px;padding:14px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.item{background:var(--p);border:1px solid var(--b);border-radius:12px;padding:13px}.item h3{margin:0 0 5px}.meta{font-size:12px;color:var(--m)}
+button{background:var(--p2);border:1px solid var(--b);color:var(--t);padding:8px 11px;border-radius:9px;cursor:pointer}.primary{background:var(--a);border-color:var(--a)}
+.danger{color:#ff9eac}.good{color:var(--g)}.warn{color:var(--w)}
+input,textarea,select{width:100%;background:#0b1018;border:1px solid var(--b);color:var(--t);border-radius:9px;padding:9px}
+.topRight select{width:auto;min-width:110px}textarea{min-height:100px}.field{margin-bottom:10px}.field label{display:block;color:var(--m);font-size:12px;margin-bottom:5px}
+.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}pre{background:#080c13;padding:10px;border-radius:9px;overflow:auto;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid var(--b);text-align:left}th{color:var(--m);font-size:12px}
+.progress{height:10px;background:#080c13;border:1px solid var(--b);border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:var(--a);transition:width .25s}
+.liveDot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--g);margin-right:6px;box-shadow:0 0 8px var(--g)}
+.taskRunning{outline:1px solid #7c6cff55;background:#171b2c}.activity{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#aeb8ca}
+.monitorBar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:9px 11px;background:#0b1018;border:1px solid var(--b);border-radius:10px;margin:10px 0}
+@media(max-width:950px){.grid{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}}@media(max-width:650px){.grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1>DOOM CORE <span class="muted" id="version"></span></h1><small id="subtitle"></small></div>
+    <div class="topRight"><select id="quickLang"></select><div class="badge" id="health"></div></div>
+  </div>
+  <div class="tabs">
+    <button data-tab="missions"></button>
+    <button data-tab="approvals"></button>
+    <button data-tab="messages"></button>
+    <button data-tab="factory"></button>
+    <button data-tab="agents"></button>
+    <button data-tab="skills"></button>
+    <button data-tab="teams"></button>
+    <button data-tab="templates"></button>
+    <button data-tab="providers"></button>
+    <button data-tab="models"></button>
+    <button data-tab="router"></button>
+    <button data-tab="runtimes"></button>
+    <button data-tab="tools"></button>
+    <button data-tab="compat"></button>
+    <button data-tab="executions"></button>
+    <button data-tab="diagnostics"></button>
+    <button data-tab="settings"></button>
+  </div>
+  <div id="view"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+let data={},tab='agents',messages={},locale='tr',settings={},locales=[];
+let missionAutoRefresh=localStorage.getItem('doom-mission-auto-refresh')!=='false';
+let missionRefreshTimer=null;
+let missionRefreshBusy=false;
+let missionLastUpdated=null;
+let diagnosticCatalog=[];
+let diagnosticLastRun=null;
+
+async function j(url,opt){
+  const r=await fetch(url,opt);
+  const raw=await r.text();
+  let body;
+  try{body=JSON.parse(raw)}catch{body=raw}
+  if(!r.ok){
+    const msg=typeof body==='string'?body:(body.details||body.code||JSON.stringify(body));
+    throw new Error(msg);
+  }
+  return body;
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function t(k,fallback){return messages[k]??fallback??k}
+function status(s){return t('status.'+String(s||'unknown'),s)}
+function entityName(x){return x.display_name||x.name||''}
+function entityDesc(x){return x.display_description||x.description||''}
+
+async function boot(){
+  locales=(await j('/api/i18n/locales')).items;
+  settings=await j('/api/settings');
+  locale=localStorage.getItem('doom-ui-locale')||settings.uiLocale||'tr';
+  if(!locales.some(x=>x.code===locale)) locale=settings.uiLocale||'tr';
+  await loadMessages();
+  await loadData();
+}
+
+async function persistUiLocale(code){
+  settings=await j('/api/settings',{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({uiLocale:code})
+  });
+}
+
+async function loadMessages(){
+  messages=await j('/api/i18n/'+encodeURIComponent(locale));
+  document.documentElement.lang=locale;
+  document.title=t('app.title','DOOM CORE');
+  $('#subtitle').textContent=t('app.subtitle');
+  $('#health').textContent=t('common.loading');
+
+  const q=$('#quickLang');
+  q.innerHTML=locales.map(x=>`<option value="${esc(x.code)}">${esc(x.nativeLabel)}</option>`).join('');
+  q.value=locale;
+  q.onchange=async()=>{
+    locale=q.value;
+    localStorage.setItem('doom-ui-locale',locale);
+    await persistUiLocale(locale);
+    await loadMessages();
+    await loadData();
+  };
+
+  const tabs={
+    missions:'nav.missions',approvals:'nav.approvals',messages:'nav.messages',factory:'nav.factory',agents:'nav.agents',skills:'nav.skills',teams:'nav.teams',templates:'nav.templates',providers:'nav.providers',models:'nav.models',router:'nav.router',
+    runtimes:'nav.runtimes',tools:'nav.tools',compat:'nav.compatibility',executions:'nav.executions',diagnostics:'nav.diagnostics',settings:'nav.settings'
+  };
+  document.querySelectorAll('.tabs button').forEach(b=>b.textContent=t(tabs[b.dataset.tab]));
+}
+
+async function loadData(){
+  const lang='?lang='+encodeURIComponent(locale);
+  const [h,mi,ap,msg,fr,a,sk,tm,tp,p,m,mp,r,tl,c,e]=await Promise.all([
+    j('/health'),j('/api/missions'),j('/api/approvals?status=all'),j('/api/messages?limit=150'),j('/api/agent-factory/requests?limit=200'),j('/api/agents'+lang),j('/api/skills'),j('/api/teams'+lang),j('/api/registry/templates'+lang),
+    j('/api/registry/providers'),j('/api/registry/models'),j('/api/model-policies'),j('/api/registry/runtimes'+lang),j('/api/tools'),
+    j('/api/registry/compatibility'+lang),j('/api/executions'+lang)
+  ]);
+  settings=await j('/api/settings');
+  data={h,mi:mi.items,ap:ap.items,msg:msg.items,fr:fr.items,a:a.items,sk:sk.items,tm:tm.items,tp:tp.items,p:p.items,m:m.items,mp:mp.items,r:r.items,tl:tl.items,c:c.items,e:e.items};
+  $('#version').textContent='V'+h.version;
+  $('#health').innerHTML=`<span class="good">● ${esc(t('common.online'))}</span> · ${esc(h.version)}`;
+  render();
+}
+
+function nav(){
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+}
+function render(){
+  nav();
+  const v=$('#view');
+  const views={missions:missionsView,approvals:approvalsView,messages:messagesView,factory:factoryView,agents,skills:skillsView,teams,templates,providers:providersView,models,router:routerView,runtimes,tools:toolsView,compat,executions,diagnostics:diagnosticsView,settings:settingsView};
+  (views[tab]||agents)(v);
+}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+  tab=b.dataset.tab;
+  render();
+  syncMissionAutoRefresh();
+});
+
+let openMissionId=null;
+
+function missionPercent(m){
+  const tasks=m.tasks||[];
+  if(!tasks.length)return 0;
+  const done=tasks.filter(x=>x.status==='done').length;
+  return Math.round((done/tasks.length)*100);
+}
+
+function missionEventLabel(type){
+  return t('events.'+type,type);
+}
+
+function formatClock(value){
+  if(!value)return '—';
+  try{return new Date(value).toLocaleTimeString()}catch{return String(value)}
+}
+
+function toggleMissionAutoRefresh(){
+  missionAutoRefresh=!missionAutoRefresh;
+  localStorage.setItem('doom-mission-auto-refresh',missionAutoRefresh?'true':'false');
+  syncMissionAutoRefresh();
+  if(openMissionId)openMission(openMissionId,true);
+}
+
+function syncMissionAutoRefresh(){
+  if(missionRefreshTimer){
+    clearInterval(missionRefreshTimer);
+    missionRefreshTimer=null;
+  }
+  if(tab==='missions' && openMissionId && missionAutoRefresh){
+    missionRefreshTimer=setInterval(()=>refreshOpenMissionSilently(),2000);
+  }
+}
+
+async function refreshOpenMissionSilently(){
+  if(!openMissionId || tab!=='missions' || !missionAutoRefresh || document.hidden || missionRefreshBusy)return;
+  missionRefreshBusy=true;
+  try{
+    await openMission(openMissionId,true);
+  }catch{}
+  finally{missionRefreshBusy=false}
+}
+
+document.addEventListener('visibilitychange',()=>syncMissionAutoRefresh());
+
+
+function missionProgress(m){
+  const total=Number(m.task_count||0);
+  const done=Number(m.done_count||0);
+  return total?`${done}/${total}`:'0/0';
+}
+
+function missionsView(v){
+  v.innerHTML=`<div class="grid2">
+    <div>
+      <div class="card"><h3>${esc(t('missions.title'))}</h3><p class="muted">${esc(t('missions.explanation'))}</p></div>
+      <div class="grid" style="margin-top:10px">${(data.mi||[]).map(m=>`
+        <div class="item">
+          <h3>${esc(m.title)}</h3>
+          <div class="meta">${esc(m.team_name)} · ${esc(t('missions.lead'))}: ${esc(m.lead_agent_name)}</div>
+          <div class="meta">${esc(t('executions.status'))}: ${esc(status(m.status))} · ${esc(t('missions.progress'))}: ${esc(missionProgress(m))}</div>
+          ${m.error_text?`<div class="meta warn">${esc(m.error_text)}</div>`:''}
+          <div class="actions">
+            ${!['new','done','cancelled','awaiting_approval'].includes(m.status)?`<button onclick="replanMissionUi('${m.id}')">${esc(t('missions.replan'))}</button>`:''}
+            ${m.status==='running'?`<button onclick="pauseMissionUi('${m.id}')">${esc(t('missions.pause'))}</button>`:''}
+            ${!['done','cancelled'].includes(m.status)?`<button onclick="cancelMissionUi('${m.id}')">${esc(t('missions.cancel'))}</button><button class="danger" onclick="killMissionUi('${m.id}')">${esc(t('missions.kill'))}</button>`:''}
+            <button onclick="openMission('${m.id}')">${esc(t('missions.details'))}</button>
+          </div>
+        </div>`).join('')||`<div class="muted">${esc(t('missions.none'))}</div>`}</div>
+    </div>
+    <div class="card">
+      <h3>${esc(t('missions.new'))}</h3>
+      <div class="field"><label>${esc(t('missions.name'))}</label><input id="missionTitle"></div>
+      <div class="field"><label>${esc(t('missions.objective'))}</label><textarea id="missionObjective" style="min-height:180px"></textarea></div>
+      <div class="field"><label>${esc(t('missions.team'))}</label>
+        <select id="missionTeam">${(data.tm||[]).map(x=>`<option value="${x.id}">${esc(entityName(x))}</option>`).join('')}</select>
+      </div>
+      <div class="actions">
+        <button onclick="missionPreflightUi(true)">${esc(t('missions.preflight'))}</button>
+        <button class="primary" onclick="createMissionUi()">${esc(t('missions.createAndRun'))}</button>
+      </div>
+    </div>
+  </div>
+  <div id="missionDetail" style="margin-top:14px"></div>`;
+
+  if(openMissionId)openMission(openMissionId,true);
+  syncMissionAutoRefresh();
+}
+
+function currentMissionDraft(){
+  return {
+    title:$('#missionTitle')?.value||'',
+    objective:$('#missionObjective')?.value||'',
+    teamId:$('#missionTeam')?.value||''
+  };
+}
+
+async function missionPreflightUi(showAlert=true){
+  const body=currentMissionDraft();
+  const result=await j('/api/diagnostics/mission-preflight',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+  });
+  if(showAlert){
+    alert((result.ok?t('diagnostics.preflightOk'):t('diagnostics.preflightFailed'))+'\n\n'+
+      result.checks.map(x=>`${x.status.toUpperCase()} · ${x.id} · ${x.summary}`).join('\n'));
+  }
+  return result;
+}
+
+async function createMissionUi(){
+  const body=currentMissionDraft();
+  const preflight=await missionPreflightUi(false);
+  if(!preflight.ok){
+    alert(t('diagnostics.preflightFailed')+'\n\n'+
+      preflight.checks.filter(x=>x.status==='fail').map(x=>`${x.id}: ${x.summary}`).join('\n'));
+    return;
+  }
+  try{
+    const x=await j('/api/missions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    alert(t('missions.created'));
+    openMissionId=x.id;
+    await loadData();
+    syncMissionAutoRefresh();
+  }catch(e){
+    alert(t('missions.createFailed')+': '+(e.message||e));
+  }
+}
+
+async function planMissionUi(id){
+  await j('/api/missions/'+id+'/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert(t('missions.planningStarted'));
+  openMissionId=id;
+  await loadData();
+}
+
+
+async function replanMissionUi(id){
+  if(!confirm(t('missions.replanConfirm')))return;
+  try{
+    await j('/api/missions/'+id+'/replan',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:'{}'
+    });
+    alert(t('missions.replanStarted'));
+  }catch(e){
+    alert(t('missions.replanFailed')+': '+(e.message||e));
+    return;
+  }
+  openMissionId=id;
+  await loadData();
+  syncMissionAutoRefresh();
+}
+
+async function runMissionUi(id){
+  try{
+    await j('/api/missions/'+id+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    alert(t('missions.runStarted'));
+  }catch(e){alert(e.message)}
+  openMissionId=id;
+  await loadData();
+}
+
+async function pauseMissionUi(id){
+  await j('/api/missions/'+id+'/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  openMissionId=id;
+  await loadData();
+}
+
+
+async function cancelMissionUi(id){
+  if(!confirm(t('missions.cancelConfirm')))return;
+  await j('/api/missions/'+id+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  openMissionId=id;
+  await loadData();
+}
+async function killMissionUi(id){
+  if(!confirm(t('missions.killConfirm')))return;
+  await j('/api/missions/'+id+'/kill',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  openMissionId=id;
+  await loadData();
+}
+async function cancelMissionTaskUi(missionId,taskId,mode){
+  const key=mode==='kill'?'missions.killConfirm':'executions.cancelConfirm';
+  if(!confirm(t(key)))return;
+  await j('/api/missions/'+missionId+'/tasks/'+taskId+'/'+mode,{
+    method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+  });
+  openMissionId=missionId;
+  await loadData();
+}
+
+async function retryMissionTaskUi(missionId,taskId){
+  await j('/api/missions/'+missionId+'/tasks/'+taskId+'/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert(t('missions.retryStarted'));
+  openMissionId=missionId;
+  await loadData();
+}
+
+
+async function reassignMissionTaskUi(missionId,taskId,selectId){
+  const agentId=$('#'+selectId).value;
+  await j('/api/missions/'+missionId+'/tasks/'+taskId+'/reassign',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({agentId})
+  });
+  alert(t('missions.reassigned'));
+  openMissionId=missionId;
+  await loadData();
+}
+
+
+async function sendMissionMessageUi(missionId){
+  const target=$('#missionMessageTarget');
+  const content=$('#missionMessageContent').value.trim();
+  if(!content)return;
+  const option=target.selectedOptions[0];
+  const recipientType=option.dataset.type;
+  const recipientId=option.value;
+  await j('/api/missions/'+missionId+'/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      recipientType,
+      recipientId,
+      content,
+      messageType:'directive',
+      priority:$('#missionMessagePriority').value
+    })
+  });
+  $('#missionMessageContent').value='';
+  await openMission(missionId,true);
+}
+
+async function openMission(id,silent=false){
+  openMissionId=id;
+  const host=$('#missionDetail');
+  if(!host)return;
+  if(!silent){
+    host.innerHTML=`<div class="card"><span class="muted">${esc(t('common.loading'))}</span></div>`;
+  }
+
+  try{
+    const m=await j('/api/missions/'+id);
+    missionLastUpdated=new Date().toISOString();
+    const taskName=new Map((m.tasks||[]).map(x=>[x.id,x.task_key]));
+    const pct=missionPercent(m);
+    const running=(m.tasks||[]).find(x=>['running','validating'].includes(x.status));
+    const activeGate=[...(m.gates||[])].reverse().find(g=>g.status==='running');
+    const activity=running?.liveExecution
+      ? `${running.task_key} · ${missionEventLabel(running.liveExecution.eventType)}`
+      : activeGate
+        ? `${t('gate.'+activeGate.gate_type,activeGate.gate_type)} · ${status(activeGate.status)}`
+        : t('missions.liveWaiting');
+
+    const gateLatest=(type)=>[...(m.gates||[])].reverse().find(g=>g.gate_type===type);
+    const qaGate=gateLatest('qa');
+    const reviewerGate=gateLatest('reviewer');
+    const acceptance=m.gates?.filter(g=>g.gate_type==='acceptance')||[];
+
+    host.innerHTML=`<div class="card">
+      <div class="actions" style="float:right">
+        ${!['new','done','cancelled','awaiting_approval'].includes(m.status)?`<button onclick="replanMissionUi('${m.id}')">${esc(t('missions.replan'))}</button>`:''}
+        <button onclick="openMissionId=null;syncMissionAutoRefresh();$('#missionDetail').innerHTML=''">${esc(t('missions.close'))}</button>
+        <button onclick="openMission('${m.id}')">${esc(t('missions.refresh'))}</button>
+      </div>
+      <h3>${esc(m.title)}</h3>
+      <p>${esc(m.objective)}</p>
+
+      <div class="monitorBar">
+        <span><span class="liveDot"></span><strong>${esc(t('missions.live'))}</strong></span>
+        <label><input type="checkbox" style="width:auto" ${missionAutoRefresh?'checked':''} onchange="toggleMissionAutoRefresh()"> ${esc(t('missions.autoRefresh'))}</label>
+        <span class="muted">${esc(t('missions.refreshEvery'))}</span>
+        <span class="muted">${esc(t('missions.lastUpdated'))}: ${esc(formatClock(missionLastUpdated))}</span>
+        <span class="activity">${esc(t('missions.currentActivity'))}: ${esc(activity)}</span>
+      </div>
+
+      <div class="item" style="margin:10px 0">
+        <h4>${esc(t('missions.communication'))} / ${esc(t('messages.steering'))}</h4>
+        <div class="meta">${esc(t('messages.steeringHint'))}</div>
+        <div class="grid2" style="margin-top:8px">
+          <div class="field"><label>${esc(t('messages.target'))}</label>
+            <select id="missionMessageTarget">
+              <option data-type="mission" value="${m.id}">${esc(t('messages.mission'))}: ${esc(m.title)}</option>
+              ${(m.tasks||[]).map(task=>`<option data-type="task" value="${task.id}">${esc(t('messages.task'))}: ${esc(task.task_key)} · ${esc(task.title)}</option>`).join('')}
+              ${(m.tasks||[]).filter(task=>task.execution_id && ['running','validating'].includes(task.status)).map(task=>`<option data-type="execution" value="${task.execution_id}">${esc(t('messages.execution'))}: ${esc(task.task_key)}</option>`).join('')}
+              ${(m.teamMembers||[]).map(a=>`<option data-type="agent" value="${a.id}">${esc(t('messages.agent'))}: ${esc(a.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>${esc(t('messages.priority'))}</label>
+            <select id="missionMessagePriority"><option value="normal">${esc(t('messages.normal'))}</option><option value="high">${esc(t('messages.high'))}</option><option value="low">${esc(t('messages.low'))}</option></select>
+          </div>
+        </div>
+        <div class="field"><textarea id="missionMessageContent" placeholder="${esc(t('messages.content'))}"></textarea></div>
+        <button onclick="sendMissionMessageUi('${m.id}')">${esc(t('messages.send'))}</button>
+        <div style="max-height:190px;overflow:auto;margin-top:10px">
+          ${(m.messages||[]).slice().reverse().slice(0,20).map(msg=>`<div class="meta"><code>${esc(msg.created_at)}</code> · <strong>${esc(msg.sender_agent_name||msg.sender_type)}</strong> → ${esc(msg.recipient_type)} · ${esc(t('messages.'+msg.message_type,msg.message_type))}<br>${esc(msg.content)}</div>`).join('')||`<div class="muted">${esc(t('messages.none'))}</div>`}
+        </div>
+      </div>
+
+      <div class="meta">${esc(t('missions.team'))}: ${esc(m.team_name)} · ${esc(t('missions.lead'))}: ${esc(m.lead_agent_name)} · ${esc(t('executions.status'))}: <strong>${esc(status(m.status))}</strong></div>
+      <div style="margin:8px 0"><div class="progress"><span style="width:${pct}%"></span></div><div class="meta">${pct}% · ${(m.tasks||[]).filter(x=>x.status==='done').length}/${(m.tasks||[]).length}</div></div>
+      ${m.error_text?`<pre class="warn">${esc(m.error_text)}</pre>`:''}
+      ${m.status==='awaiting_approval'?`<div class="item warn" style="margin:10px 0">${esc(t('missions.awaitingBoss'))} <button onclick="tab='approvals';render();syncMissionAutoRefresh()">${esc(t('nav.approvals'))}</button></div>`:''}
+
+      ${(m.specialists||[]).length?`<div class="item" style="margin:10px 0"><h4>${esc(t('factory.active'))}</h4>
+        ${(m.specialists||[]).map(s=>`<span class="badge">${esc(s.name)} · ${esc(s.role_name)} · ${esc(status(s.status))}</span>`).join(' ')}
+        <div class="actions"><button onclick="factoryMissionId='${m.id}';tab='factory';render();syncMissionAutoRefresh()">${esc(t('nav.factory'))}</button></div>
+      </div>`:''}
+
+      <div class="grid2" style="margin:12px 0">
+        <div class="item">
+          <h4>${esc(t('missions.workspace'))}</h4>
+          <div class="meta">${esc(t('missions.workspaceMode'))}: ${esc(t('workspace.'+(m.workspace?.mode||'shared'),m.workspace?.mode||'shared'))}</div>
+          <div class="meta">${esc(t('missions.baseCommit'))}: <code>${esc(m.workspace?.base_commit||'—')}</code></div>
+          <div class="meta">${esc(t('missions.integrationBranch'))}: <code>${esc(m.workspace?.integration_branch||'—')}</code></div>
+          <div class="meta">${esc(t('missions.integrationPath'))}: <code>${esc(m.workspace?.integration_workspace||m.workspace?.base_workspace||'—')}</code></div>
+          ${m.workspace?.mode==='isolated'?`<div class="meta warn">${esc(t('missions.isolatedNote'))}</div>`:''}
+        </div>
+        <div class="item">
+          <h4>${esc(t('missions.gates'))}</h4>
+          <div class="meta">${esc(t('missions.acceptanceGate'))}: ${acceptance.length?acceptance.map(g=>`${taskName.get(g.task_id)||''}:${status(g.status)}`).join(' · '):'—'}</div>
+          <div class="meta">${esc(t('missions.qaGate'))}: ${qaGate?`${status(qaGate.status)} · ${qaGate.summary||''}`:'—'}</div>
+          <div class="meta">${esc(t('missions.reviewerGate'))}: ${reviewerGate?`${status(reviewerGate.status)} · ${reviewerGate.summary||''}`:'—'}</div>
+        </div>
+      </div>
+
+      <h4>${esc(t('missions.tasks'))}</h4>
+      ${(m.tasks||[]).length?`<table><thead><tr>
+        <th>${esc(t('missions.task'))}</th>
+        <th>${esc(t('missions.agent'))}</th>
+        <th>${esc(t('missions.dependencies'))}</th>
+        <th>${esc(t('executions.status'))}</th>
+        <th>${esc(t('missions.execution'))}</th>
+        <th></th>
+      </tr></thead><tbody>${m.tasks.map(task=>{
+        const latestWt=task.workspaces?.[0];
+        const gate=[...(m.gates||[])].reverse().find(g=>g.task_id===task.id && g.gate_type==='acceptance');
+        return `<tr class="${['running','validating'].includes(task.status)?'taskRunning':''}">
+        <td><strong>${esc(task.task_key)} · ${esc(task.title)}</strong>
+          <div class="meta"><strong>${esc(t('missions.actionInstruction'))}:</strong> ${esc(task.instruction||task.description)}</div>
+          ${task.expectedOutcome?`<div class="meta"><strong>${esc(t('missions.expectedOutcome'))}:</strong> ${esc(task.expectedOutcome)}</div>`:''}
+          ${task.workMode?`<div class="meta"><strong>${esc(t('missions.workMode'))}:</strong> ${esc(task.workMode)}</div>`:''}
+          ${task.execution_model_name?`<div class="meta"><strong>${esc(t('missions.executionRoute'))}:</strong> ${esc(task.execution_model_name)} · ${esc(task.execution_runtime_name||'—')} · ${esc(task.execution_provider_name||'—')}${task.executionRoute?.policyName?' · '+esc(task.executionRoute.policyName):''}</div>`:''}
+          ${task.mutationQualification?.required?`<div class="meta"><strong>${esc(t('missions.mutationQualification'))}:</strong> ${esc(task.mutationQualification.selectedStatus||'—')}${task.mutationQualification.policyFallback?' · '+esc(t('missions.mutationFallback')):''}${(task.mutationQualification.tested||[]).length?' · '+esc(String(task.mutationQualification.tested.length))+' '+esc(t('missions.modelsProbed')):''}</div>`:''}
+          ${(task.acceptanceCriteria||[]).length?`<details><summary>${esc(t('missions.acceptance'))}</summary><ul>${task.acceptanceCriteria.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:''}
+          ${task.liveExecution?`<div class="activity">▶ ${esc(missionEventLabel(task.liveExecution.eventType))} · ${esc(formatClock(task.liveExecution.createdAt))}</div>`:''}
+          ${latestWt?`<details><summary>${esc(t('missions.worktree'))}</summary>
+            <div class="meta"><code>${esc(latestWt.workspace_path)}</code></div>
+            <div class="meta">${esc(t('missions.commit'))}: <code>${esc(latestWt.commit_hash||'—')}</code></div>
+            <div class="meta">${esc(t('missions.mergeCommit'))}: <code>${esc(latestWt.merge_commit||'—')}</code></div>
+          </details>`:''}
+          ${(task.evidence||[]).length?`<details><summary>${esc(t('missions.evidence'))} (${task.evidence.length})</summary>
+            ${(task.evidence||[]).map(ev=>`<div class="meta"><code>${esc(ev.evidence_type)}</code> · ${esc(status(ev.status))}</div>`).join('')}
+          </details>`:''}
+          ${(task.artifacts||[]).length?`<details><summary>${esc(t('artifacts.title'))} (${task.artifacts.length})</summary>
+            ${(task.artifacts||[]).map(a=>`<div class="meta"><code>${esc(a.artifact_type)}</code> · ${esc(a.name)}${a.path?' · '+esc(a.path):''}</div>`).join('')}
+          </details>`:''}
+          ${gate?`<div class="meta">${esc(t('missions.acceptanceGate'))}: <strong>${esc(status(gate.status))}</strong>${gate.summary?' · '+esc(gate.summary):''}</div>
+            ${gate.detail && Object.keys(gate.detail).length?`<details><summary>${esc(t('missions.acceptanceGateDetails'))}</summary>
+              ${(gate.detail.criteria||[]).map(c=>`<div class="meta">${c.pass?'✅':'❌'} ${esc(c.criterion||'')}<br>${esc(c.evidence||'')}</div>`).join('')}
+              ${(gate.detail.findings||[]).map(f=>`<div class="meta warn">• ${esc(typeof f==='string'?f:JSON.stringify(f))}</div>`).join('')}
+              ${(gate.detail.violations||[]).map(v=>`<div class="meta bad">• ${esc(v.reason||JSON.stringify(v))}</div>`).join('')}
+              <details><summary>JSON</summary><pre>${esc(JSON.stringify(gate.detail,null,2))}</pre></details>
+            </details>`:''}
+          `:''}
+        </td>
+        <td>${esc(task.agent_name)}</td>
+        <td>${(task.dependencies||[]).map(d=>`<span class="badge">${esc(d.task_key)} · ${esc(status(d.status))}</span>`).join(' ')||'—'}</td>
+        <td><strong>${esc(status(task.status))}</strong>${task.error_text?`<div class="meta warn">${esc(task.error_text)}</div>`:''}</td>
+        <td>${task.execution_id?`<code>${esc(task.execution_id)}</code>`:'—'}</td>
+        <td>
+          ${['running','validating'].includes(task.status)?`
+            <button onclick="cancelMissionTaskUi('${m.id}','${task.id}','cancel')">${esc(t('missions.cancelTask'))}</button>
+            <button class="danger" onclick="cancelMissionTaskUi('${m.id}','${task.id}','kill')">${esc(t('missions.killTask'))}</button>
+          `:`
+            ${!['done','cancelled'].includes(task.status)?`
+              <select id="reassign_${task.id}" style="min-width:120px;margin-bottom:5px">
+                ${(m.teamMembers||[]).map(a=>`<option value="${a.id}" ${a.id===task.assigned_agent_id?'selected':''}>${esc(a.name)}</option>`).join('')}
+              </select>
+              <button onclick="reassignMissionTaskUi('${m.id}','${task.id}','reassign_${task.id}')">${esc(t('missions.reassign'))}</button>
+            `:''}
+            ${['failed','blocked'].includes(task.status)?`<button onclick="retryMissionTaskUi('${m.id}','${task.id}')">${esc(t('missions.retry'))}</button>`:''}
+          `}
+        </td>
+      </tr>
+      ${task.result_text?`<tr><td colspan="6"><details><summary>${esc(t('missions.result'))}: ${esc(task.task_key)}</summary><pre>${esc(task.result_text)}</pre></details></td></tr>`:''}`;
+      }).join('')}</tbody></table>`:`<div class="muted">${esc(t('missions.planPending'))}</div>`}
+
+      <h4>${esc(t('missions.events'))}</h4>
+      <div style="max-height:330px;overflow:auto">${[...(m.events||[])].reverse().slice(0,40).map(ev=>`<div class="meta"><code>${esc(ev.created_at)}</code> · ${esc(missionEventLabel(ev.event_type))}${ev.task_id?' · '+esc(taskName.get(ev.task_id)||ev.task_id):''}</div>`).join('')}</div>
+    </div>`;
+
+    syncMissionAutoRefresh();
+  }catch(e){
+    if(!silent)host.innerHTML=`<div class="card"><pre>${esc(e.message||e)}</pre></div>`;
+  }
+}
+
+function approvalRisk(a){return t('risk.'+(a.risk_level||'medium'),a.risk_level||'medium')}
+
+function approvalsView(v){
+  const pending=(data.ap||[]).filter(x=>['pending','merge_failed'].includes(x.status));
+  const history=(data.ap||[]).filter(x=>!['pending','merge_failed'].includes(x.status));
+
+  const cards=(items)=>items.map(a=>`
+    <div class="item">
+      <h3>${esc(a.title)}</h3>
+      <div class="meta">${esc(t('approvals.type'))}: ${esc(t('approval.'+a.approval_type,a.approval_type))} · ${esc(t('approvals.risk'))}: <span class="warn">${esc(approvalRisk(a))}</span></div>
+      <div class="meta">${esc(t('approvals.status'))}: <strong>${esc(status(a.status))}</strong> · ${esc(t('approvals.requested'))}: ${esc(a.requested_at)}</div>
+      <p>${esc(a.summary||'')}</p>
+      ${a.payload?.integration?.diffStat?`<pre>${esc(a.payload.integration.diffStat)}</pre>`:''}
+      <div class="actions">
+        <button onclick="approvalDetails('${a.id}')">${esc(t('approvals.details'))}</button>
+        ${a.status==='pending'?`<button class="primary" onclick="approveUi('${a.id}')">${esc(t('approvals.approveMerge'))}</button><button class="danger" onclick="rejectUi('${a.id}')">${esc(t('approvals.reject'))}</button>`:''}
+        ${a.status==='merge_failed'?`<button class="primary" onclick="approveUi('${a.id}')">${esc(t('approvals.retryMerge'))}</button>`:''}
+      </div>
+    </div>`).join('');
+
+  v.innerHTML=`<div class="card"><h3>${esc(t('approvals.title'))}</h3><p class="muted">${esc(t('approvals.explanation'))}</p>
+    <div class="meta">${pending.length} ${esc(t('approvals.pendingCount'))}</div>
+  </div>
+  <div class="grid" style="margin-top:10px">${cards(pending)||`<div class="muted">${esc(t('approvals.none'))}</div>`}</div>
+  ${history.length?`<h3 style="margin-top:18px">${esc(t('status.completed'))}</h3><div class="grid">${cards(history)}</div>`:''}
+  <div id="approvalDetail" style="margin-top:14px"></div>`;
+}
+
+async function approvalDetails(id){
+  const a=await j('/api/approvals/'+id);
+  const el=$('#approvalDetail'); if(!el)return;
+  el.innerHTML=`<div class="card">
+    <div class="actions" style="float:right"><button onclick="$('#approvalDetail').innerHTML=''">${esc(t('executions.close'))}</button></div>
+    <h3>${esc(a.title)}</h3>
+    <div class="meta">${esc(status(a.status))} · ${esc(approvalRisk(a))}</div>
+    <h4>${esc(t('approvals.summary'))}</h4><p>${esc(a.summary||'')}</p>
+    <h4>${esc(t('approvals.base'))}</h4><pre>${esc(JSON.stringify({
+      workspace:a.payload?.baseWorkspace,
+      commit:a.payload?.baseCommit,
+      head:a.payload?.integration?.baseHead,
+      branch:a.payload?.integration?.baseBranch
+    },null,2))}</pre>
+    <h4>${esc(t('approvals.integration'))}</h4><pre>${esc(JSON.stringify({
+      workspace:a.payload?.integrationWorkspace,
+      branch:a.payload?.integrationBranch,
+      head:a.payload?.integration?.integrationHead
+    },null,2))}</pre>
+    <h4>${esc(t('approvals.diffStat'))}</h4><pre>${esc(a.payload?.integration?.diffStat||'—')}</pre>
+    ${a.payload?.integration?.diff?`<details><summary>${esc(t('approvals.diff'))}</summary><pre>${esc(a.payload.integration.diff)}</pre></details>`:''}
+    ${a.decision_note?`<h4>${esc(t('approvals.note'))}</h4><pre>${esc(a.decision_note)}</pre>`:''}
+    ${Object.keys(a.result||{}).length?`<h4>${esc(t('missions.result'))}</h4><pre>${esc(JSON.stringify(a.result,null,2))}</pre>`:''}
+  </div>`;
+}
+
+async function approveUi(id){
+  const note=prompt(t('approvals.note'))||'';
+  try{
+    await j('/api/approvals/'+id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});
+    alert(t('approvals.completed'));
+  }catch(e){alert(e.message)}
+  await loadData();
+  tab='approvals';render();
+}
+
+async function rejectUi(id){
+  const note=prompt(t('approvals.note'))||'';
+  if(!confirm(t('approvals.reject')+'?'))return;
+  await j('/api/approvals/'+id+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});
+  alert(t('approvals.rejected'));
+  await loadData();
+  tab='approvals';render();
+}
+
+function messageRecipientLabel(m){
+  if(m.recipient_type==='mission'){
+    const mission=data.mi?.find(x=>x.id===m.recipient_id);
+    return `${t('messages.mission')}: ${mission?.title||m.recipient_id}`;
+  }
+  if(m.recipient_type==='task')return `${t('messages.task')}: ${m.recipient_id}`;
+  if(m.recipient_type==='execution')return `${t('messages.execution')}: ${m.recipient_id}`;
+  if(m.recipient_type==='agent'){
+    const a=data.a?.find(x=>x.id===m.recipient_id);
+    return `${t('messages.agent')}: ${a?.display_name||a?.name||m.recipient_id}`;
+  }
+  return `${m.recipient_type}: ${m.recipient_id}`;
+}
+
+function messagesView(v){
+  v.innerHTML=`<div class="card"><h3>${esc(t('messages.title'))}</h3><p class="muted">${esc(t('messages.explanation'))}</p></div>
+  <div class="card" style="margin-top:10px">
+    ${(data.msg||[]).length?`<table><thead><tr>
+      <th>${esc(t('messages.time'))}</th><th>${esc(t('messages.sender'))}</th><th>${esc(t('messages.recipient'))}</th>
+      <th>${esc(t('messages.type'))}</th><th>${esc(t('messages.status'))}</th><th>${esc(t('messages.content'))}</th>
+    </tr></thead><tbody>
+    ${(data.msg||[]).map(m=>`<tr>
+      <td><code>${esc(m.created_at)}</code></td>
+      <td>${esc(m.sender_agent_name||m.sender_type)}</td>
+      <td>${esc(messageRecipientLabel(m))}</td>
+      <td>${esc(t('messages.'+m.message_type,m.message_type))}</td>
+      <td>${esc(t('messages.'+m.status,m.status))}</td>
+      <td>${esc(m.content)}</td>
+    </tr>`).join('')}
+    </tbody></table>`:`<div class="muted">${esc(t('messages.none'))}</div>`}
+  </div>`;
+}
+
+let factoryMissionId=null;
+
+async function factoryView(v){
+  const missions=(data.mi||[]).filter(m=>!['done','cancelled'].includes(m.status));
+  if(!factoryMissionId && missions.length)factoryMissionId=missions[0].id;
+
+  let specialists=[];
+  let missionDetail=null;
+  if(factoryMissionId){
+    try{
+      const [sp,md]=await Promise.all([
+        j('/api/missions/'+factoryMissionId+'/specialists'),
+        j('/api/missions/'+factoryMissionId)
+      ]);
+      specialists=sp.items||[];
+      missionDetail=md;
+    }catch{}
+  }
+
+  const active=specialists.filter(x=>x.status==='active');
+  const archived=specialists.filter(x=>x.status==='archived');
+  const requests=(data.fr||[]).filter(x=>!factoryMissionId || x.mission_id===factoryMissionId);
+
+  v.innerHTML=`<div class="card">
+    <h3>${esc(t('factory.title'))}</h3>
+    <p class="muted">${esc(t('factory.explanation'))}</p>
+    <div class="meta warn">${esc(t('factory.shellDenied'))}</div>
+    <div class="field"><label>${esc(t('messages.mission'))}</label>
+      <select id="factoryMission" onchange="factoryMissionId=this.value;factoryView($('#view'))">
+        ${missions.map(m=>`<option value="${m.id}" ${m.id===factoryMissionId?'selected':''}>${esc(m.title)} · ${esc(status(m.status))}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px">
+    <div>
+      <div class="card">
+        <h3>${esc(t('factory.active'))}</h3>
+        ${(active.length?active.map(s=>`
+          <div class="item">
+            <h4>${esc(s.name)} <span class="badge">${esc(t('factory.temporary'))}</span></h4>
+            <div class="meta">${esc(s.role_name)} · ${esc(s.scope_type)} · autonomy ${esc(s.autonomy_level)}</div>
+            <div class="meta">${esc(s.objective)}</div>
+            <div class="meta">tools: ${esc((s.tools||[]).join(', '))}</div>
+            <div class="actions"><button onclick="archiveSpecialistUi('${s.agent_id}')">${esc(t('factory.archive'))}</button></div>
+          </div>`).join(''):`<div class="muted">${esc(t('factory.none'))}</div>`)}
+      </div>
+
+      ${archived.length?`<div class="card" style="margin-top:10px"><h3>${esc(t('factory.archived'))}</h3>
+        ${archived.map(s=>`<div class="meta">${esc(s.name)} · ${esc(s.role_name)} · ${esc(s.archive_reason||'')}</div>`).join('')}
+      </div>`:''}
+
+      <div class="card" style="margin-top:10px"><h3>${esc(t('factory.requests'))}</h3>
+        ${(requests.length?requests.slice(0,50).map(r=>`<div class="meta"><code>${esc(r.created_at)}</code> · ${esc(r.requested_by_type)} · ${esc(status(r.status))} · ${esc(r.spec?.roleName||r.spec?.name||'')}</div>`).join(''):`<div class="muted">—</div>`)}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>${esc(t('factory.new'))}</h3>
+      ${factoryMissionId?`
+      <div class="field"><label>${esc(t('factory.name'))}</label><input id="factoryName" placeholder="PostgreSQL Uzmanı"></div>
+      <div class="field"><label>${esc(t('factory.role'))}</label><input id="factoryRole" placeholder="PostgreSQL Performance Expert"></div>
+      <div class="field"><label>${esc(t('factory.objective'))}</label><textarea id="factoryObjective"></textarea></div>
+      <div class="field"><label>${esc(t('factory.scope'))}</label><select id="factoryScope"><option value="mission">${esc(t('factory.scopeMission'))}</option><option value="task">${esc(t('factory.scopeTask'))}</option></select></div>
+      <div class="field"><label>${esc(t('factory.assignTask'))}</label><select id="factoryTask"><option value="">—</option>
+        ${(missionDetail?.tasks||[]).filter(x=>!['done','running','validating','cancelled'].includes(x.status)).map(x=>`<option value="${x.task_key}">${esc(x.task_key)} · ${esc(x.title)}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>${esc(t('factory.modelStrategy'))}</label><select id="factoryStrategy">
+        ${['best_available','best_local_general','best_local_coder','best_local_creative','tools_required','vision_required'].map(x=>`<option value="${x}">${esc(t('modelStrategy.'+x,x))}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>${esc(t('factory.toolProfiles'))}</label>
+        ${['read','write','git','tests','skills','communication'].map(x=>`<label style="display:block"><input class="factoryTool" type="checkbox" value="${x}" style="width:auto" ${['read','communication'].includes(x)?'checked':''}> ${esc(t('toolProfile.'+x,x))}</label>`).join('')}
+      </div>
+      <div class="field"><label>${esc(t('factory.skills'))}</label>
+        ${(data.sk||[]).map(s=>`<label style="display:block"><input class="factorySkill" type="checkbox" value="${s.id}" style="width:auto"> ${esc(s.name)}</label>`).join('')||'<span class="muted">—</span>'}
+      </div>
+      <div class="field"><label>${esc(t('factory.capabilities'))}</label><input id="factoryCaps" placeholder="chat, tools, reasoning"></div>
+      <div class="field"><label>${esc(t('factory.autonomy'))}</label><input id="factoryAutonomy" type="number" min="0" max="3" value="2"></div>
+      <button class="primary" onclick="spawnSpecialistUi()">${esc(t('factory.spawn'))}</button>
+      `:`<div class="muted">${esc(t('missions.none'))}</div>`}
+    </div>
+  </div>`;
+}
+
+async function spawnSpecialistUi(){
+  const body={
+    name:$('#factoryName').value,
+    roleName:$('#factoryRole').value,
+    objective:$('#factoryObjective').value,
+    scopeType:$('#factoryScope').value,
+    assignTaskKey:$('#factoryTask').value||null,
+    modelStrategy:$('#factoryStrategy').value,
+    toolProfiles:[...document.querySelectorAll('.factoryTool:checked')].map(x=>x.value),
+    skillIds:[...document.querySelectorAll('.factorySkill:checked')].map(x=>x.value),
+    requiredCapabilities:splitTokens($('#factoryCaps').value),
+    autonomyLevel:Number($('#factoryAutonomy').value||2)
+  };
+  await j('/api/missions/'+factoryMissionId+'/specialists',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+  });
+  alert(t('factory.created'));
+  await loadData();tab='factory';await factoryView($('#view'));
+}
+
+async function archiveSpecialistUi(agentId){
+  await j('/api/missions/'+factoryMissionId+'/specialists/'+agentId+'/archive',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'boss_archive'})
+  });
+  alert(t('factory.archivedDone'));
+  await loadData();tab='factory';await factoryView($('#view'));
+}
+
+function agents(v){
+  v.innerHTML=`<div class="grid2"><div><div class="grid">${data.a.map(a=>`
+  <div class="item">
+    <h3>${esc(entityName(a))}</h3>
+    <div class="meta">${esc(entityDesc(a))}</div>
+    <div class="meta">${esc(t('agents.version'))} ${a.version_no||'?'} · ${esc(t('agents.autonomyShort'))} ${a.autonomy_level??'?'} · ${esc(a.runtime_policy?.runtimeId||t('common.none'))} · ${esc(a.model_policy?.mode==='policy'?(a.model_policy?.policyId||t('agents.routed')):(a.model_policy?.modelId||t('common.none')))}</div>
+    <div class="actions">
+      <button onclick="runAgent('${a.id}')">${esc(t('agents.run'))}</button>
+      <button onclick="openAgentEditor('${a.id}')">${esc(t('agents.edit'))}</button>
+      <button onclick="inspectAgent('${a.id}')">${esc(t('agents.details'))}</button>
+      <button class="danger" onclick="delAgent('${a.id}')">${esc(t('agents.delete'))}</button>
+    </div>
+  </div>`).join('')||`<div class="muted">${esc(t('agents.none'))}</div>`}</div></div>
+  <div class="card"><h3>${esc(t('agents.new'))}</h3>
+    <div class="field"><label>${esc(t('agents.name'))}</label><input id="aname"></div>
+    <div class="field"><label>${esc(t('agents.description'))}</label><input id="adesc"></div>
+    <div class="field"><label>${esc(t('agents.systemPrompt'))}</label><textarea id="aprompt">${esc(t('agents.defaultPrompt'))}</textarea></div>
+    <div class="field"><label>${esc(t('agents.runtime'))}</label><select id="aruntime">${data.r.map(x=>`<option value="${x.id}">${esc(entityName(x))}</option>`).join('')}</select></div>
+    <div class="field"><label>${esc(t('agents.modelPolicyMode'))}</label><select id="aModelMode" onchange="toggleCreateModelPolicy()"><option value="fixed">${esc(t('router.fixed'))}</option><option value="policy">${esc(t('router.policy'))}</option></select></div>
+    <div class="field" id="aFixedModelWrap"><label>${esc(t('agents.model'))}</label><select id="amodel">${data.m.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+    <div class="field" id="aPolicyWrap" style="display:none"><label>${esc(t('agents.modelPolicy'))}</label><select id="aPolicy">${data.mp.map(x=>`<option value="${x.id}" data-version="${x.current_version_id}">${esc(x.name)} · v${esc(x.version_no||'?')}</option>`).join('')}</select></div>
+    <div class="field"><label>${esc(t('agents.autonomy'))}</label><input id="aauto" type="number" min="0" max="5" value="2"></div>
+    <button class="primary" onclick="createAgent()">${esc(t('agents.create'))}</button>
+  </div></div><div id="agentEditor" style="margin-top:14px"></div>`;
+}
+function toggleCreateModelPolicy(){
+  const policy=$('#aModelMode')?.value==='policy';
+  if($('#aFixedModelWrap'))$('#aFixedModelWrap').style.display=policy?'none':'block';
+  if($('#aPolicyWrap'))$('#aPolicyWrap').style.display=policy?'block':'none';
+}
+function selectedPolicyObject(selectId){
+  const el=$(selectId);
+  const option=el?.selectedOptions?.[0];
+  return {mode:'policy',policyId:el?.value,policyVersionId:option?.dataset?.version};
+}
+async function createAgent(){
+  const body={
+    name:$('#aname').value,
+    description:$('#adesc').value,
+    systemPrompt:$('#aprompt').value,
+    runtimePolicy:{mode:'fixed',runtimeId:$('#aruntime').value},
+    modelPolicy:$('#aModelMode').value==='policy'?selectedPolicyObject('#aPolicy'):{mode:'fixed',modelId:$('#amodel').value},
+    autonomyLevel:Number($('#aauto').value),
+    tools:[],skills:[]
+  };
+  await j('/api/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  await loadData();
+}
+async function delAgent(id){
+  if(confirm(t('common.deleteConfirm'))){
+    await j('/api/agents/'+id,{method:'DELETE'});
+    await loadData();
+  }
+}
+async function inspectAgent(id){
+  const x=await j('/api/agents/'+id+'?lang='+encodeURIComponent(locale));
+  alert(JSON.stringify(x,null,2));
+}
+async function runAgent(id){
+  const taskText=prompt(t('common.taskPrompt'));
+  if(!taskText)return;
+  try{
+    const x=await j('/api/agents/'+id+'/run',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:taskText})
+    });
+    alert(t('common.executionStarted')+': '+x.id);
+    tab='executions';
+    await loadData();
+  }catch(e){alert(e.message)}
+}
+
+function splitTokens(value){
+  return String(value||'')
+    .split(/[\n,]+/)
+    .map(x=>x.trim())
+    .filter(Boolean);
+}
+
+function effectiveToolNames(grants){
+  const set=new Set();
+  const catalog=data.tl||[];
+  for(const grant of grants||[]){
+    const exact=catalog.find(x=>x.name===grant);
+    if(exact){set.add(exact.name);continue}
+    for(const tool of catalog){
+      if(tool.category===grant)set.add(tool.name);
+    }
+  }
+  return set;
+}
+
+async function openAgentEditor(id){
+  const host=$('#agentEditor');
+  if(!host)return;
+
+  host.innerHTML=`<div class="card"><div class="muted">${esc(t('common.loading'))}</div></div>`;
+
+  try{
+    const [agent,versions]=await Promise.all([
+      j('/api/agents/'+id+'?lang='+encodeURIComponent(locale)),
+      j('/api/agents/'+id+'/versions')
+    ]);
+
+    const v=agent.version||{};
+    const toolSet=effectiveToolNames(v.tools||[]);
+    const runtimeId=v.runtimePolicy?.runtimeId||'';
+    const modelMode=v.modelPolicy?.mode==='policy'?'policy':'fixed';
+    const modelId=v.modelPolicy?.modelId||'';
+    const policyId=v.modelPolicy?.policyId||'';
+
+    host.innerHTML=`<div class="card">
+      <div class="actions" style="float:right">
+        <button onclick="closeAgentEditor()">${esc(t('agents.closeEditor'))}</button>
+      </div>
+      <h3>${esc(t('agents.editorTitle'))}: ${esc(agent.display_name||agent.name)}</h3>
+
+      <div class="grid2">
+        <div class="item">
+          <h4>${esc(t('agents.identity'))}</h4>
+          <div class="meta" style="margin-bottom:10px">${esc(t('agents.profileLanguageHint'))}</div>
+          <div class="field"><label>${esc(t('agents.name'))}</label><input id="edName" value="${esc(agent.display_name||agent.name)}"></div>
+          <div class="field"><label>${esc(t('agents.description'))}</label><textarea id="edDescription">${esc(agent.display_description||agent.description||'')}</textarea></div>
+          <div class="field"><label>${esc(t('agents.lifetime'))}</label>
+            <select id="edLifetime">
+              ${['permanent','project','mission','task'].map(x=>`<option value="${x}">${esc(t('lifetime.'+x,x))}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>${esc(t('agents.tags'))}</label><input id="edTags" value="${esc((agent.tags||[]).join(', '))}"></div>
+          <div class="field"><label><input id="edEnabled" type="checkbox" style="width:auto" ${agent.enabled?'checked':''}> ${esc(t('agents.enabled'))}</label></div>
+          <button class="primary" onclick="saveAgentProfile('${agent.id}')">${esc(t('agents.saveProfile'))}</button>
+        </div>
+
+        <div class="item">
+          <h4>${esc(t('agents.behavior'))} · ${esc(t('agents.version'))} ${esc(v.version_no||'?')}</h4>
+          <div class="field"><label>${esc(t('agents.systemPrompt'))}</label><textarea id="edPrompt" style="min-height:180px">${esc(v.system_prompt||'')}</textarea></div>
+          <div class="field"><label>${esc(t('agents.instructions'))}</label><textarea id="edInstructions">${esc(v.instructions||'')}</textarea></div>
+          <div class="field"><label>${esc(t('agents.runtime'))}</label>
+            <select id="edRuntime">${data.r.map(x=>`<option value="${x.id}">${esc(entityName(x))}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>${esc(t('agents.modelPolicyMode'))}</label>
+            <select id="edModelMode" onchange="toggleEditorModelPolicy()"><option value="fixed">${esc(t('router.fixed'))}</option><option value="policy">${esc(t('router.policy'))}</option></select>
+          </div>
+          <div class="field" id="edFixedModelWrap"><label>${esc(t('agents.model'))}</label>
+            <select id="edModel">${data.m.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+          </div>
+          <div class="field" id="edPolicyWrap"><label>${esc(t('agents.modelPolicy'))}</label>
+            <select id="edPolicy">${data.mp.map(x=>`<option value="${x.id}" data-version="${x.current_version_id}">${esc(x.name)} · v${esc(x.version_no||'?')}</option>`).join('')}</select>
+          </div>
+          <div class="field"><label>${esc(t('agents.autonomy'))}</label><input id="edAutonomy" type="number" min="0" max="5" value="${Number(v.autonomy_level??2)}"></div>
+
+          <div class="field"><label>${esc(t('agents.requiredCapabilities'))}</label>
+            <input id="edCaps" value="${esc((v.requiredCapabilities||[]).join(', '))}">
+            <div class="meta">${esc(t('agents.capabilitiesHint'))}</div>
+          </div>
+
+          <div class="field"><label>${esc(t('skills.selectForAgent'))}</label>
+            <div class="meta" style="margin-bottom:7px">${esc(t('skills.selectHint'))}</div>
+            <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+              ${(data.sk||[]).filter(skill=>skill.enabled).map(skill=>{const bound=(v.skillBindings||[]).some(b=>b.skill_id===skill.id);return `
+                <label class="item" style="padding:8px;display:block">
+                  <input type="checkbox" class="edSkill" value="${esc(skill.id)}" style="width:auto" ${bound?'checked':''}>
+                  <strong>${esc(skill.name)}</strong> <span class="meta">v${esc(skill.version_no||'?')}</span>
+                  <div class="meta">${esc(skill.description||'')}</div>
+                </label>`}).join('')}
+            </div>
+          </div>
+
+          <div class="field"><label>${esc(t('agents.tools'))}</label>
+            <div class="meta" style="margin-bottom:7px">${esc(t('agents.toolsHint'))}</div>
+            <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+              ${(data.tl||[]).map(tool=>`
+                <label class="item" style="padding:8px;display:block">
+                  <input type="checkbox" class="edTool" value="${esc(tool.name)}" style="width:auto" ${toolSet.has(tool.name)?'checked':''}>
+                  <code>${esc(tool.name)}</code>
+                  <div class="meta">${esc(t('tools.category.'+tool.category,tool.category))} · ${esc(t('tools.risk.'+tool.risk,tool.risk))}</div>
+                </label>`).join('')}
+            </div>
+          </div>
+
+          <button class="primary" onclick="saveAgentVersion('${agent.id}')">${esc(t('agents.saveNewVersion'))}</button>
+        </div>
+      </div>
+
+      <div class="item" style="margin-top:12px">
+        <h4>${esc(t('agents.versionHistory'))}</h4>
+        ${(versions.items||[]).length?`
+        <table><thead><tr>
+          <th>${esc(t('agents.version'))}</th>
+          <th>${esc(t('agents.runtime'))}</th>
+          <th>${esc(t('agents.model'))}</th>
+          <th>${esc(t('agents.autonomyShort'))}</th>
+          <th>${esc(t('agents.createdAt'))}</th>
+          <th>${esc(t('agents.createdBy'))}</th>
+          <th></th>
+        </tr></thead><tbody>
+          ${(versions.items||[]).map(x=>`<tr>
+            <td>v${esc(x.version_no)} ${x.isCurrent?`<span class="good">· ${esc(t('agents.current'))}</span>`:''}</td>
+            <td>${esc(x.runtimePolicy?.runtimeId||'-')}</td>
+            <td>${esc(x.modelPolicy?.mode==='policy'?(x.modelPolicy?.policyId||'-'):(x.modelPolicy?.modelId||'-'))}</td>
+            <td>${esc(x.autonomy_level)}</td>
+            <td>${esc(x.created_at)}</td>
+            <td>${esc(x.created_by)}</td>
+            <td>${x.isCurrent?'':`<button onclick="activateAgentVersion('${agent.id}','${x.id}')">${esc(t('agents.activate'))}</button>`}</td>
+          </tr>`).join('')}
+        </tbody></table>`:`<div class="muted">${esc(t('agents.noVersions'))}</div>`}
+      </div>
+    </div>`;
+
+    $('#edLifetime').value=agent.lifetime||'permanent';
+    $('#edRuntime').value=runtimeId;
+    $('#edModelMode').value=modelMode;
+    $('#edModel').value=modelId;
+    if(policyId)$('#edPolicy').value=policyId;
+    toggleEditorModelPolicy();
+    host.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){
+    host.innerHTML=`<div class="card"><pre>${esc(e.message||e)}</pre></div>`;
+  }
+}
+
+function closeAgentEditor(){
+  const el=$('#agentEditor');
+  if(el)el.innerHTML='';
+}
+
+async function saveAgentProfile(id){
+  const body={
+    name:$('#edName').value,
+    description:$('#edDescription').value,
+    lifetime:$('#edLifetime').value,
+    tags:splitTokens($('#edTags').value),
+    enabled:$('#edEnabled').checked
+  };
+  await j('/api/agents/'+id+'/profile?lang='+encodeURIComponent(locale),{
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  alert(t('agents.profileSaved'));
+  await loadData();
+  await openAgentEditor(id);
+}
+
+function toggleEditorModelPolicy(){
+  const policy=$('#edModelMode')?.value==='policy';
+  if($('#edFixedModelWrap'))$('#edFixedModelWrap').style.display=policy?'none':'block';
+  if($('#edPolicyWrap'))$('#edPolicyWrap').style.display=policy?'block':'none';
+}
+async function saveAgentVersion(id){
+  const tools=[...document.querySelectorAll('.edTool:checked')].map(x=>x.value);
+  const skillIds=[...document.querySelectorAll('.edSkill:checked')].map(x=>x.value);
+  const body={
+    systemPrompt:$('#edPrompt').value,
+    instructions:$('#edInstructions').value,
+    runtimePolicy:{mode:'fixed',runtimeId:$('#edRuntime').value},
+    modelPolicy:$('#edModelMode').value==='policy'?selectedPolicyObject('#edPolicy'):{mode:'fixed',modelId:$('#edModel').value},
+    requiredCapabilities:splitTokens($('#edCaps').value),
+    tools,
+    skillIds,
+    autonomyLevel:Number($('#edAutonomy').value)
+  };
+  await j('/api/agents/'+id+'/versions',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  alert(t('agents.versionSaved'));
+  await loadData();
+  await openAgentEditor(id);
+}
+
+async function activateAgentVersion(agentId,versionId){
+  if(!confirm(t('agents.rollbackConfirm')))return;
+  await j('/api/agents/'+agentId+'/versions/'+versionId+'/activate',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:'{}'
+  });
+  await loadData();
+  await openAgentEditor(agentId);
+}
+
+function skillsView(v){
+  v.innerHTML=`<div class="grid2"><div><div class="card"><h3>${esc(t('skills.title'))}</h3><p class="muted">${esc(t('skills.explanation'))}</p><p class="warn">${esc(t('skills.security'))}</p></div>
+  <div class="grid" style="margin-top:10px">${(data.sk||[]).map(s=>`<div class="item"><h3>${esc(s.name)}</h3><div class="meta">${esc(s.slug)} · v${esc(s.version_no||'?')} · ${esc(s.source_type||'')}</div><div class="meta">${esc(s.description||'')}</div><div class="meta">${esc(t('skills.hash'))}: ${esc(String(s.content_hash||'').slice(0,16))}…</div><div class="actions"><button onclick="skillDetails('${s.id}')">${esc(t('skills.details'))}</button><button onclick="exportSkill('${s.id}','${esc(s.slug)}')">${esc(t('skills.export'))}</button></div></div>`).join('')||`<div class="muted">${esc(t('skills.none'))}</div>`}</div></div>
+  <div><div class="card"><h3>${esc(t('skills.new'))}</h3>
+    <div class="field"><label>${esc(t('skills.name'))}</label><input id="skName"></div>
+    <div class="field"><label>${esc(t('skills.slug'))}</label><input id="skSlug"></div>
+    <div class="field"><label>${esc(t('skills.description'))}</label><input id="skDesc"></div>
+    <div class="field"><label>${esc(t('skills.packageVersion'))}</label><input id="skVersion" value="1.0.0"></div>
+    <div class="field"><label>${esc(t('skills.instructions'))}</label><textarea id="skInstructions" style="min-height:180px"></textarea></div>
+    <div class="field"><label>${esc(t('skills.requiredTools'))}</label><input id="skTools"></div>
+    <div class="field"><label>${esc(t('skills.capabilities'))}</label><input id="skCaps"></div>
+    <div class="field"><label>${esc(t('skills.tags'))}</label><input id="skTags"></div>
+    <button class="primary" onclick="createSkill()">${esc(t('skills.create'))}</button>
+  </div>
+  <div class="card" style="margin-top:10px"><h3>${esc(t('skills.importFolder'))}</h3><p class="meta">${esc(t('skills.folderHint'))}</p><input id="skillFolder" type="file" webkitdirectory multiple><div class="actions"><button onclick="importSkillFolder()">${esc(t('skills.importFolder'))}</button></div></div>
+  <div class="card" style="margin-top:10px"><h3>${esc(t('skills.importPackage'))}</h3><input id="skillPackage" type="file" accept=".json,.doomskill.json,application/json"><div class="actions"><button onclick="importSkillJson()">${esc(t('skills.importPackage'))}</button></div></div>
+  </div></div><div id="skillDetail" style="margin-top:14px"></div>`;
+}
+
+async function createSkill(){
+  const body={name:$('#skName').value,slug:$('#skSlug').value,description:$('#skDesc').value,version:$('#skVersion').value,instructions:$('#skInstructions').value,requiredTools:splitTokens($('#skTools').value),recommendedCapabilities:splitTokens($('#skCaps').value),tags:splitTokens($('#skTags').value)};
+  await j('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); alert(t('skills.created')); await loadData();
+}
+
+function inferSkillName(skillMd,fallback){
+  const m=String(skillMd||'').match(/^#\s+(.+)$/m); return (m&&m[1].trim())||fallback||'Imported Skill';
+}
+
+async function importSkillFolder(){
+  const input=$('#skillFolder'); const selected=[...(input.files||[])]; if(!selected.length)return;
+  const files={}; let total=0; let manifest={}; const rootName=(selected[0].webkitRelativePath||selected[0].name).split('/')[0];
+  for(const f of selected){
+    const rel=(f.webkitRelativePath||f.name).split('/').slice(1).join('/')||f.name;
+    if(f.size>262144)continue; total+=f.size; if(total>1048576)throw new Error('Skill folder exceeds 1 MB text limit');
+    const text=await f.text(); if(text.includes('\u0000'))continue; files[rel]=text;
+    if(rel.toLowerCase()==='skill.json'){try{manifest=JSON.parse(text)}catch{}}
+  }
+  const skillMd=files['SKILL.md']||files['skill.md']||'';
+  const skill={...(manifest.skill||manifest),name:(manifest.skill||manifest).name||inferSkillName(skillMd,rootName),slug:(manifest.skill||manifest).slug||rootName,description:(manifest.skill||manifest).description||'',version:(manifest.skill||manifest).version||'1.0.0',instructions:(manifest.skill||manifest).instructions||skillMd,source:'browser-folder'};
+  await j('/api/skills/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({format:'doom-skill/v1',skill,files})}); alert(t('skills.imported')); await loadData();
+}
+
+async function importSkillJson(){
+  const f=$('#skillPackage').files?.[0]; if(!f)return; const pkg=JSON.parse(await f.text()); await j('/api/skills/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pkg)}); alert(t('skills.imported')); await loadData();
+}
+
+async function exportSkill(id,slug){
+  const pkg=await j('/api/skills/'+id+'/export'); const blob=new Blob([JSON.stringify(pkg,null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=(slug||'skill')+'.doomskill.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+async function skillDetails(id){
+  const [s,v]=await Promise.all([j('/api/skills/'+id),j('/api/skills/'+id+'/versions')]); const el=$('#skillDetail'); if(!el)return;
+  el.innerHTML=`<div class="card"><h3>${esc(s.name)} · ${esc(t('skills.versionHistory'))}</h3><div class="meta">${esc(s.description||'')}</div><h4>${esc(t('skills.instructions'))}</h4><pre>${esc(s.version?.instructions_md||'')}</pre><h4>${esc(t('skills.resources'))}</h4><pre>${esc(Object.keys(s.version?.files||{}).join('\n')||'-')}</pre><table><thead><tr><th>v</th><th>${esc(t('skills.packageVersion'))}</th><th>${esc(t('skills.hash'))}</th><th></th></tr></thead><tbody>${v.items.map(x=>`<tr><td>${esc(x.version_no)} ${x.isCurrent?`<span class="good">· ${esc(t('skills.current'))}</span>`:''}</td><td>${esc(x.package_version)}</td><td><code>${esc(String(x.content_hash).slice(0,16))}…</code></td><td>${x.isCurrent?'':`<button onclick="activateSkillVersion('${s.id}','${x.id}')">${esc(t('skills.activate'))}</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function activateSkillVersion(skillId,versionId){await j('/api/skills/'+skillId+'/versions/'+versionId+'/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); await loadData(); await skillDetails(skillId)}
+function teams(v){
+  v.innerHTML=`<div class="grid">${(data.tm||[]).map(x=>`
+  <div class="item"><h3>${esc(entityName(x))}</h3>
+    <div class="meta">${esc(entityDesc(x))}</div>
+    <div class="meta">${esc(t('teams.lead'))}: ${esc(x.lead_agent_name||'-')}</div>
+    <div style="margin-top:10px">${(x.members||[]).map(m=>`<div class="meta">• ${esc(m.display_agent_name||m.agent_name)} <span class="muted">(${esc(t('role.'+(m.role_label||'member'),m.role_label||t('role.member')))})</span></div>`).join('')}</div>
+  </div>`).join('')||`<div class="muted">${esc(t('teams.none'))}</div>`}</div>`;
+}
+
+function templates(v){
+  v.innerHTML=`<div class="grid">${data.tp.map(x=>`
+  <div class="item"><h3>${esc(entityName(x))}</h3>
+  <div class="meta">${esc(t('category.'+x.category,x.category))} · ${esc(entityDesc(x))}</div>
+  <pre>${esc(JSON.stringify(x.definition,null,2))}</pre></div>`).join('')||`<div class="muted">${esc(t('templates.none'))}</div>`}</div>`;
+}
+
+let providerEditingId=null;
+let modelEditingId=null;
+
+function providersView(v){
+  const edit=providerEditingId ? data.p.find(x=>x.id===providerEditingId) : null;
+  v.innerHTML=`<div class="grid2">
+    <div>
+      <div class="card"><h3>${esc(t('providers.title'))}</h3><p class="muted">${esc(t('providers.explanation'))}</p></div>
+      <div class="grid" style="margin-top:10px">${(data.p||[]).map(x=>`
+        <div class="item">
+          <h3>${esc(x.name)}</h3>
+          <div class="meta">${esc(t('protocol.'+x.protocol,x.protocol))} · ${esc(t('location.'+x.location,x.location))} · ${esc(x.enabled?t('common.enabled'):t('common.disabled'))}</div>
+          <div class="meta">${esc(x.base_url)}</div>
+          <div class="meta">${esc(x.model_count)} ${esc(t('providers.models'))} · ${esc(t('providers.lastCheck'))}: ${esc(x.last_check_status?status(x.last_check_status):t('models.notTested'))}${x.last_check_latency_ms!=null?' · '+esc(x.last_check_latency_ms)+' ms':''}</div>
+          <div class="actions">
+            <button onclick="testProvider('${x.id}')">${esc(t('providers.test'))}</button>
+            <button onclick="discoverModels('${x.id}')">${esc(t('providers.discover'))}</button>
+            <button onclick="editProvider('${x.id}')">${esc(t('providers.edit'))}</button>
+            <button class="danger" onclick="removeProvider('${x.id}')">${esc(t('providers.delete'))}</button>
+          </div>
+        </div>`).join('')||`<div class="muted">${esc(t('providers.none'))}</div>`}</div>
+      <div id="providerDiscovery" style="margin-top:12px"></div>
+    </div>
+    <div class="card">
+      <h3>${esc(edit?t('providers.edit'):t('providers.new'))}</h3>
+      <div class="field"><label>${esc(t('providers.name'))}</label><input id="pName" value="${esc(edit?.name||'')}"></div>
+      <div class="field"><label>${esc(t('providers.protocol'))}</label><select id="pProtocol"><option value="openai-compatible">${esc(t('protocol.openai-compatible'))}</option></select></div>
+      <div class="field"><label>${esc(t('providers.baseUrl'))}</label><input id="pBaseUrl" placeholder="http://127.0.0.1:11434/v1" value="${esc(edit?.base_url||'')}"></div>
+      <div class="field"><label>${esc(t('providers.authType'))}</label><select id="pAuth"><option value="none">${esc(t('auth.none'))}</option><option value="bearer">${esc(t('auth.bearer'))}</option></select></div>
+      <div class="field"><label>${esc(t('providers.secretRef'))}</label><input id="pSecretRef" placeholder="OPENAI_API_KEY" value="${esc(edit?.secret_ref||'')}"><div class="meta">${esc(t('providers.secretRefHint'))}</div></div>
+      <div class="field"><label>${esc(t('providers.location'))}</label><select id="pLocation"><option value="local">${esc(t('location.local'))}</option><option value="cloud">${esc(t('location.cloud'))}</option></select></div>
+      <div class="field"><label><input id="pEnabled" type="checkbox" style="width:auto" ${edit?.enabled===0?'':'checked'}> ${esc(t('providers.enabled'))}</label></div>
+      <div class="actions"><button class="primary" onclick="saveProvider()">${esc(edit?t('providers.update'):t('providers.create'))}</button>${edit?`<button onclick="cancelProviderEdit()">${esc(t('providers.cancelEdit'))}</button>`:''}</div>
+    </div>
+  </div>`;
+  if(edit){
+    $('#pProtocol').value=edit.protocol||'openai-compatible';
+    $('#pAuth').value=edit.auth_type||'none';
+    $('#pLocation').value=edit.location||'local';
+  }
+}
+
+function editProvider(id){providerEditingId=id;providersView($('#view'))}
+function cancelProviderEdit(){providerEditingId=null;providersView($('#view'))}
+
+async function saveProvider(){
+  const body={
+    name:$('#pName').value,
+    protocol:$('#pProtocol').value,
+    baseUrl:$('#pBaseUrl').value,
+    authType:$('#pAuth').value,
+    secretRef:$('#pSecretRef').value,
+    location:$('#pLocation').value,
+    enabled:$('#pEnabled').checked
+  };
+  if(providerEditingId){
+    await j('/api/providers/'+providerEditingId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }else{
+    await j('/api/providers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }
+  providerEditingId=null;
+  alert(t('providers.saved'));
+  await loadData();
+}
+
+async function testProvider(id){
+  const x=await j('/api/providers/'+id+'/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert(t('providers.testPassed')+' '+x.latencyMs+' ms · '+x.modelCount+' '+t('providers.models'));
+  await loadData();
+}
+
+async function discoverModels(id){
+  const x=await j('/api/providers/'+id+'/discover-models');
+  const provider=data.p.find(p=>p.id===id);
+  const el=$('#providerDiscovery');
+  if(!el)return;
+  el.innerHTML=`<div class="card"><h3>${esc(t('providers.discoveryTitle'))}: ${esc(provider?.name||'')}</h3>
+    <div class="meta">${esc(x.latencyMs)} ms</div>
+    <table><thead><tr><th>${esc(t('models.providerModelId'))}</th><th></th></tr></thead><tbody>
+      ${(x.items||[]).map(m=>`<tr><td><code>${esc(m.id)}</code></td><td>${m.registeredModelId?`<span class="good">${esc(t('providers.registered'))}</span>`:`<button onclick="registerDiscoveredModel('${id}',${JSON.stringify(m.id).replace(/"/g,'&quot;')})">${esc(t('providers.register'))}</button>`}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+async function registerDiscoveredModel(providerId,providerModelId){
+  await j('/api/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    providerId,
+    name:providerModelId,
+    providerModelId,
+    enabled:true,
+    capabilities:{},
+    labels:['discovered']
+  })});
+  await loadData();
+  tab='models'; render();
+}
+
+async function removeProvider(id){
+  if(!confirm(t('common.confirmDelete')))return;
+  await j('/api/providers/'+id,{method:'DELETE'});
+  alert(t('providers.deleted'));
+  await loadData();
+}
+
+function capCheckbox(key,value){
+  return `<label class="item" style="display:block;padding:8px"><input class="modelCap" data-cap="${esc(key)}" type="checkbox" style="width:auto" ${value?'checked':''}> ${esc(t('models.'+key,key))}</label>`;
+}
+
+function models(v){
+  const edit=modelEditingId ? data.m.find(x=>x.id===modelEditingId) : null;
+  const caps=edit?.capabilities||{};
+  v.innerHTML=`<div class="grid2">
+    <div>
+      <div class="card"><h3>${esc(t('models.title'))}</h3><p class="muted">${esc(t('models.explanation'))}</p></div>
+      <div class="grid" style="margin-top:10px">${(data.m||[]).map(x=>`
+        <div class="item">
+          <h3>${esc(x.name)}</h3>
+          <div class="meta">${esc(x.provider_name)} · <code>${esc(x.provider_model_id)}</code></div>
+          <div class="meta">${esc(x.enabled?t('common.enabled'):t('common.disabled'))} · ${esc(t('models.chat'))}: ${esc(x.last_chat_status?status(x.last_chat_status):t('models.notTested'))}${x.last_chat_latency_ms!=null?' '+esc(x.last_chat_latency_ms)+'ms':''} · ${esc(t('models.tools'))}: ${esc(x.last_tools_status?status(x.last_tools_status):t('models.notTested'))}${x.last_tools_latency_ms!=null?' '+esc(x.last_tools_latency_ms)+'ms':''} · ${esc(t('models.mutation'))}: ${esc(x.last_mutation_status?status(x.last_mutation_status):t('models.notTested'))}${x.last_mutation_latency_ms!=null?' '+esc(x.last_mutation_latency_ms)+'ms':''}</div>
+          <div class="meta">${esc((x.labels||[]).join(', '))}</div>
+          <div class="actions">
+            <button onclick="testModelChat('${x.id}')">${esc(t('models.testChat'))}</button>
+            <button onclick="testModelTools('${x.id}')">${esc(t('models.testTools'))}</button>
+            <button onclick="testModelMutation('${x.id}')">${esc(t('models.testMutation'))}</button>
+            <button onclick="editModel('${x.id}')">${esc(t('models.edit'))}</button>
+            <button class="danger" onclick="removeModel('${x.id}')">${esc(t('models.delete'))}</button>
+          </div>
+        </div>`).join('')||`<div class="muted">${esc(t('models.none'))}</div>`}</div>
+    </div>
+    <div class="card">
+      <h3>${esc(edit?t('models.edit'):t('models.new'))}</h3>
+      <div class="field"><label>${esc(t('models.name'))}</label><input id="mName" value="${esc(edit?.name||'')}"></div>
+      <div class="field"><label>${esc(t('models.provider'))}</label><select id="mProvider">${(data.p||[]).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>${esc(t('models.providerModelId'))}</label><input id="mProviderId" value="${esc(edit?.provider_model_id||'')}"></div>
+      <div class="grid2">
+        <div class="field"><label>${esc(t('models.contextConfigured'))}</label><input id="mContext" type="number" min="1" value="${esc(edit?.context_window_configured||'')}"></div>
+        <div class="field"><label>${esc(t('models.maxContextReported'))}</label><input id="mMaxContext" type="number" min="1" value="${esc(edit?.max_context_reported||'')}"></div>
+      </div>
+      <div class="field"><label>${esc(t('models.labels'))}</label><input id="mLabels" value="${esc((edit?.labels||[]).join(', '))}"></div>
+      <div class="field"><label>${esc(t('models.capabilities'))}</label><div class="grid" style="grid-template-columns:repeat(2,1fr)">
+        ${capCheckbox('chat',caps.chat)}
+        ${capCheckbox('tools',caps.tools)}
+        ${capCheckbox('reasoning',caps.reasoning)}
+        ${capCheckbox('vision',caps.vision)}
+        ${capCheckbox('streaming',caps.streaming)}
+        ${capCheckbox('structuredOutput',caps.structuredOutput)}
+      </div></div>
+      <div class="field"><label><input id="mEnabled" type="checkbox" style="width:auto" ${edit?.enabled===0?'':'checked'}> ${esc(t('models.enabled'))}</label></div>
+      <div class="actions"><button class="primary" onclick="saveModel()">${esc(edit?t('models.update'):t('models.create'))}</button>${edit?`<button onclick="cancelModelEdit()">${esc(t('models.cancelEdit'))}</button>`:''}</div>
+    </div>
+  </div>`;
+  if(edit)$('#mProvider').value=edit.provider_id;
+}
+
+function editModel(id){modelEditingId=id;models($('#view'))}
+function cancelModelEdit(){modelEditingId=null;models($('#view'))}
+
+async function saveModel(){
+  const capabilities={};
+  document.querySelectorAll('.modelCap').forEach(x=>capabilities[x.dataset.cap]=x.checked);
+  const numOrNull=id=>{const v=$(id).value.trim();return v?Number(v):null};
+  const body={
+    providerId:$('#mProvider').value,
+    name:$('#mName').value,
+    providerModelId:$('#mProviderId').value,
+    contextWindowConfigured:numOrNull('#mContext'),
+    maxContextReported:numOrNull('#mMaxContext'),
+    labels:splitTokens($('#mLabels').value),
+    capabilities,
+    enabled:$('#mEnabled').checked
+  };
+  if(modelEditingId){
+    await j('/api/models/'+modelEditingId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }else{
+    await j('/api/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  }
+  modelEditingId=null;
+  alert(t('models.saved'));
+  await loadData();
+}
+
+async function testModelChat(id){
+  const x=await j('/api/models/'+id+'/test-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert((x.pass?t('models.testPassed'):t('models.testFailed'))+' '+x.latencyMs+' ms');
+  await loadData();
+}
+
+async function testModelTools(id){
+  const x=await j('/api/models/'+id+'/test-tools',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert((x.pass?t('models.testPassed'):t('models.testFailed'))+' '+x.latencyMs+' ms');
+  await loadData();
+}
+
+async function testModelMutation(id){
+  const x=await j('/api/models/'+id+'/test-mutation',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  alert((x.pass?t('models.testPassed'):t('models.testFailed'))+' '+x.latencyMs+' ms');
+  await loadData();
+}
+
+async function removeModel(id){
+  if(!confirm(t('common.confirmDelete')))return;
+  await j('/api/models/'+id,{method:'DELETE'});
+  alert(t('models.deleted'));
+  await loadData();
+}
+
+function policyDefinitionFrom(prefix){
+  const caps=[...document.querySelectorAll('.'+prefix+'Req:checked')].map(x=>x.value);
+  const require={};
+  for(const c of caps)require[c]=true;
+  return {
+    location:$('#'+prefix+'Location').value,
+    require,
+    preferredLabels:splitTokens($('#'+prefix+'Labels').value),
+    preferredCapabilities:splitTokens($('#'+prefix+'Caps').value),
+    preferLowerLatency:$('#'+prefix+'Latency').checked,
+    preferLargerContext:$('#'+prefix+'Context').checked,
+    fallbackModelIds:[...document.querySelectorAll('.'+prefix+'Fallback:checked')].map(x=>x.value)
+  };
+}
+
+function routerView(v){
+  v.innerHTML=`<div class="grid2">
+    <div>
+      <div class="card"><h3>${esc(t('router.title'))}</h3><p class="muted">${esc(t('router.explanation'))}</p></div>
+      <div class="grid" style="margin-top:10px">${(data.mp||[]).map(p=>`
+        <div class="item"><h3>${esc(p.name)}</h3><div class="meta">${esc(p.description||'')}</div>
+        <div class="meta">${esc(t('router.currentVersion'))}: v${esc(p.version_no||'?')} · ${esc(p.current_version_id||'')}</div>
+        <pre>${esc(JSON.stringify(p.definition,null,2))}</pre>
+        </div>`).join('')}</div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>${esc(t('router.newPolicy'))}</h3>
+        <div class="field"><label>${esc(t('router.name'))}</label><input id="rpName"></div>
+        <div class="field"><label>${esc(t('router.description'))}</label><input id="rpDesc"></div>
+        <div class="field"><label>${esc(t('router.location'))}</label><select id="rpLocation"><option value="any">${esc(t('location.any'))}</option><option value="local">${esc(t('location.local'))}</option><option value="cloud">${esc(t('location.cloud'))}</option></select></div>
+        <div class="field"><label>${esc(t('router.require'))}</label>
+          <div class="actions">${['chat','tools','vision','reasoning','structuredOutput','coding'].map(c=>`<label><input class="rpReq" type="checkbox" value="${c}" style="width:auto" ${c==='chat'?'checked':''}> ${esc(t('models.'+c,c))}</label>`).join(' ')}</div>
+        </div>
+        <div class="field"><label>${esc(t('router.preferredLabels'))}</label><input id="rpLabels"></div>
+        <div class="field"><label>${esc(t('router.preferredCapabilities'))}</label><input id="rpCaps"></div>
+        <div class="field"><label><input id="rpLatency" type="checkbox" style="width:auto" checked> ${esc(t('router.preferLatency'))}</label></div>
+        <div class="field"><label><input id="rpContext" type="checkbox" style="width:auto" checked> ${esc(t('router.preferContext'))}</label></div>
+        <div class="field"><label>${esc(t('router.fallbackModels'))}</label>${data.m.map(m=>`<label style="display:block"><input class="rpFallback" type="checkbox" value="${m.id}" style="width:auto"> ${esc(m.name)}</label>`).join('')}</div>
+        <button class="primary" onclick="createRouterPolicy()">${esc(t('router.create'))}</button>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h3>${esc(t('router.simulator'))}</h3>
+        <div class="field"><label>${esc(t('agents.runtime'))}</label><select id="simRuntime">${data.r.map(x=>`<option value="${x.id}">${esc(entityName(x))}</option>`).join('')}</select></div>
+        <div class="field"><label>${esc(t('agents.modelPolicy'))}</label><select id="simPolicy">${data.mp.map(x=>`<option value="${x.id}" data-version="${x.current_version_id}">${esc(x.name)} · v${esc(x.version_no||'?')}</option>`).join('')}</select></div>
+        <div class="field"><label>${esc(t('router.requiredCapabilities'))}</label><input id="simCaps" value="chat"></div>
+        <button onclick="simulateRoute()">${esc(t('router.simulate'))}</button>
+        <div id="routeResult" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function createRouterPolicy(){
+  const body={
+    name:$('#rpName').value,
+    description:$('#rpDesc').value,
+    definition:policyDefinitionFrom('rp')
+  };
+  await j('/api/model-policies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  alert(t('router.policySaved'));await loadData();
+}
+
+async function simulateRoute(){
+  const sel=$('#simPolicy');
+  const option=sel.selectedOptions[0];
+  const body={
+    runtimeId:$('#simRuntime').value,
+    modelPolicy:{mode:'policy',policyId:sel.value,policyVersionId:option.dataset.version},
+    requiredCapabilities:splitTokens($('#simCaps').value)
+  };
+  const x=await j('/api/router/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const el=$('#routeResult');
+  el.innerHTML=`<div class="item"><h4>${esc(t('router.selected'))}: ${esc(x.selectedModelName)}</h4><div class="meta">${esc(t('router.reason'))}: ${esc(x.reason)}</div>
+  <table><thead><tr><th>${esc(t('models.name'))}</th><th>${esc(t('router.score'))}</th><th>${esc(t('router.eligible'))}</th><th>${esc(t('router.reasons'))}</th></tr></thead><tbody>
+  ${x.candidates.sort((a,b)=>b.score-a.score).map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.score)}</td><td>${esc(c.eligible?'✓':'—')}</td><td>${esc((c.reasons||[]).join(', '))}</td></tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+function runtimes(v){
+  v.innerHTML=`<div class="grid">${data.r.map(x=>`
+  <div class="item"><h3>${esc(entityName(x))}</h3>
+  <div class="meta">${esc(x.adapter_type)} · ${esc(x.enabled?t('common.enabled'):t('common.disabled'))}</div>
+  <pre>${esc(x.capabilities_json)}</pre></div>`).join('')}</div>`;
+}
+
+function toolsView(v){
+  v.innerHTML=`<div class="card"><h3>${esc(t('tools.title'))}</h3>
+    <p class="muted">${esc(t('tools.explanation'))}</p>
+    <table><thead><tr>
+      <th>${esc(t('tools.name'))}</th><th>${esc(t('tools.category'))}</th><th>${esc(t('tools.risk'))}</th>
+    </tr></thead><tbody>${(data.tl||[]).map(x=>`<tr>
+      <td><code>${esc(x.name)}</code></td>
+      <td>${esc(t('tools.category.'+x.category,x.category))}</td>
+      <td>${esc(t('tools.risk.'+x.risk,x.risk))}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function compat(v){
+  v.innerHTML=`<div class="card">
+  <div class="actions"><button onclick="smoke()">${esc(t('compat.runDirectToolTest'))}</button></div>
+  <table><thead><tr>
+    <th>${esc(t('compat.model'))}</th><th>${esc(t('compat.runtime'))}</th>
+    <th>${esc(t('compat.chat'))}</th><th>${esc(t('compat.tools'))}</th>
+    <th>${esc(t('compat.coding'))}</th><th>${esc(t('compat.notes'))}</th>
+  </tr></thead><tbody>${data.c.map(x=>`<tr>
+    <td>${esc(x.model_name)}</td><td>${esc(x.runtime_name)}</td>
+    <td>${esc(status(x.chat_status))}</td><td>${esc(status(x.tools_status))}</td>
+    <td>${esc(status(x.coding_status))}</td><td>${esc(x.display_notes||x.notes||'')}</td>
+  </tr>`).join('')}</tbody></table></div>`;
+}
+async function smoke(){
+  const x=await j('/api/compatibility/direct-tool-test',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+  });
+  alert(x.pass?t('common.pass'):t('common.fail'));
+  await loadData();
+}
+
+function executions(v){
+  v.innerHTML=`<div class="card"><div class="actions"><button onclick="loadData()">${esc(t('executions.refresh'))}</button></div><table><thead><tr>
+    <th>${esc(t('executions.time'))}</th><th>${esc(t('executions.agent'))}</th>
+    <th>${esc(t('executions.runtime'))}</th><th>${esc(t('executions.model'))}</th>
+    <th>${esc(t('executions.status'))}</th><th>${esc(t('executions.task'))}</th><th></th>
+  </tr></thead><tbody>${data.e.map(x=>`<tr>
+    <td>${esc(x.started_at)}</td><td>${esc(x.agent_name)}</td><td>${esc(x.runtime_name)}</td>
+    <td>${esc(x.model_name)}</td><td>${esc(status(x.status))}</td><td>${esc(x.task_text)}</td>
+    <td>
+      <button onclick="executionDetails('${x.id}')">${esc(t('executions.details'))}</button>
+      ${x.status==='running'?`<button onclick="cancelExecutionUi('${x.id}','cancel')">${esc(t('executions.cancel'))}</button><button class="danger" onclick="cancelExecutionUi('${x.id}','kill')">${esc(t('executions.kill'))}</button>`:''}
+    </td>
+  </tr>`).join('')}</tbody></table><div id="executionDetail" style="margin-top:14px"></div></div>`;
+}
+
+
+async function cancelExecutionUi(id,mode){
+  const key=mode==='kill'?'executions.killConfirm':'executions.cancelConfirm';
+  if(!confirm(t(key)))return;
+  await j('/api/executions/'+id+'/'+mode,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  await loadData();
+  tab='executions';render();
+}
+
+async function executionDetails(id){
+  const [x,ev]=await Promise.all([j('/api/executions/'+id),j('/api/executions/'+id+'/events?limit=200')]);
+  const el=$('#executionDetail');
+  if(!el)return;
+  el.innerHTML=`<div class="item"><div class="actions" style="float:right"><button onclick="$('#executionDetail').innerHTML=''">${esc(t('executions.close'))}</button></div>
+    <h3>${esc(t('executions.details'))}</h3>
+    <div class="meta">${esc(x.id)} · ${esc(status(x.status))}</div>
+    <h4>${esc(t('executions.result'))}</h4><pre>${esc(x.result_text||t('executions.noResult'))}</pre>
+    ${x.error_text?`<h4>${esc(t('executions.error'))}</h4><pre>${esc(x.error_text)}</pre>`:''}
+    <h4>${esc(t('executions.events'))}</h4><pre>${esc(JSON.stringify(ev.items,null,2))}</pre>
+  </div>`;
+}
+
+async function ensureDiagnosticCatalog(){
+  if(diagnosticCatalog.length)return diagnosticCatalog;
+  const x=await j('/api/diagnostics/tests');
+  diagnosticCatalog=x.items||[];
+  return diagnosticCatalog;
+}
+
+function diagnosticStatusBadge(statusValue){
+  const cls=statusValue==='pass'?'good':statusValue==='fail'?'bad':'warn';
+  return `<span class="${cls}"><strong>${esc(t('diagnostics.'+statusValue,statusValue.toUpperCase()))}</strong></span>`;
+}
+
+async function diagnosticsView(v){
+  await ensureDiagnosticCatalog();
+  const groups=[...new Set(diagnosticCatalog.map(x=>x.group))];
+  const teams=data.tm||[];
+  v.innerHTML=`<div class="card">
+    <h3>${esc(t('diagnostics.title'))}</h3>
+    <p class="muted">${esc(t('diagnostics.explanation'))}</p>
+    <div class="actions">
+      <button class="primary" onclick="runDiagnosticsUi()">${esc(t('diagnostics.runAll'))}</button>
+      <button onclick="runDiagnosticsSelectedUi()">${esc(t('diagnostics.runSelected'))}</button>
+      <button onclick="document.querySelectorAll('.diagCheck').forEach(x=>x.checked=true)">${esc(t('diagnostics.selectAll'))}</button>
+      <button onclick="document.querySelectorAll('.diagCheck').forEach(x=>x.checked=false)">${esc(t('diagnostics.clear'))}</button>
+      ${diagnosticLastRun?`<button onclick="copyDiagnosticsReport()">${esc(t('diagnostics.copyReport'))}</button>`:''}
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:10px">
+    <div class="card">
+      <h3>${esc(t('diagnostics.test'))}</h3>
+      ${groups.map(group=>`<div class="item">
+        <strong>${esc(group)}</strong>
+        ${(diagnosticCatalog.filter(x=>x.group===group)).map(test=>`
+          <label style="display:block;margin-top:6px">
+            <input class="diagCheck" type="checkbox" value="${esc(test.id)}" style="width:auto" checked>
+            <code>${esc(test.id)}</code> · ${esc(test.name)}
+          </label>`).join('')}
+      </div>`).join('')}
+    </div>
+
+    <div class="card">
+      <h3>${esc(t('diagnostics.missionPreflight'))}</h3>
+      <p class="muted">${esc(t('diagnostics.missionPreflightHelp'))}</p>
+      <div class="field"><label>${esc(t('missions.name'))}</label><input id="diagMissionTitle" value="Diagnostics Test Mission"></div>
+      <div class="field"><label>${esc(t('missions.objective'))}</label><textarea id="diagMissionObjective">Doom Core mission create preflight test. No mission should be created by this diagnostic.</textarea></div>
+      <div class="field"><label>${esc(t('missions.team'))}</label><select id="diagMissionTeam">
+        ${teams.map(x=>`<option value="${x.id}">${esc(entityName(x))} · Lead: ${esc(x.lead_agent_name||'—')}</option>`).join('')}
+      </select></div>
+      <button onclick="runMissionPreflightDiagnostic()">${esc(t('diagnostics.checkMission'))}</button>
+      <div id="diagMissionResult" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="diagnosticRunResult" style="margin-top:12px">${renderDiagnosticRun()}</div>`;
+}
+
+function renderDiagnosticRun(){
+  if(!diagnosticLastRun)return '';
+  const s=diagnosticLastRun.summary;
+  return `<div class="card">
+    <h3>${esc(t('diagnostics.result'))}</h3>
+    <div class="meta">
+      ${diagnosticStatusBadge('pass')} ${s.pass} ·
+      ${diagnosticStatusBadge('warn')} ${s.warn} ·
+      ${diagnosticStatusBadge('fail')} ${s.fail} ·
+      ${s.durationMs} ms
+    </div>
+    <table style="margin-top:10px"><thead><tr>
+      <th>${esc(t('diagnostics.group'))}</th>
+      <th>${esc(t('diagnostics.test'))}</th>
+      <th>Status</th>
+      <th>${esc(t('diagnostics.summary'))}</th>
+      <th>${esc(t('diagnostics.duration'))}</th>
+    </tr></thead><tbody>
+    ${(diagnosticLastRun.results||[]).map(r=>`<tr>
+      <td>${esc(r.group)}</td>
+      <td><code>${esc(r.id)}</code><div class="meta">${esc(r.name)}</div></td>
+      <td>${diagnosticStatusBadge(r.status)}</td>
+      <td>${esc(r.summary)}${r.detail!==undefined?`<details><summary>${esc(t('diagnostics.details'))}</summary><pre>${esc(JSON.stringify(r.detail,null,2))}</pre></details>`:''}</td>
+      <td>${esc(r.durationMs)} ms</td>
+    </tr>`).join('')}
+    </tbody></table>
+  </div>`;
+}
+
+async function runDiagnosticsUi(ids){
+  const host=$('#diagnosticRunResult');
+  if(host)host.innerHTML=`<div class="card"><span class="muted">${esc(t('diagnostics.running'))}</span></div>`;
+  diagnosticLastRun=await j('/api/diagnostics/run',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(ids?.length?{ids}:{})
+  });
+  if(host)host.innerHTML=renderDiagnosticRun();
+  else {tab='diagnostics';render()}
+}
+
+async function runDiagnosticsSelectedUi(){
+  const ids=[...document.querySelectorAll('.diagCheck:checked')].map(x=>x.value);
+  await runDiagnosticsUi(ids);
+}
+
+async function runMissionPreflightDiagnostic(){
+  const result=await j('/api/diagnostics/mission-preflight',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      title:$('#diagMissionTitle').value,
+      objective:$('#diagMissionObjective').value,
+      teamId:$('#diagMissionTeam').value
+    })
+  });
+  const host=$('#diagMissionResult');
+  host.innerHTML=`<div class="item">
+    ${result.ok?diagnosticStatusBadge('pass'):diagnosticStatusBadge('fail')}
+    <div class="meta">${esc(JSON.stringify(result.resolved))}</div>
+    ${result.checks.map(x=>`<div class="meta">${diagnosticStatusBadge(x.status)} · <code>${esc(x.id)}</code> · ${esc(x.summary)}</div>`).join('')}
+    <details><summary>${esc(t('diagnostics.details'))}</summary><pre>${esc(JSON.stringify(result,null,2))}</pre></details>
+  </div>`;
+}
+
+async function copyDiagnosticsReport(){
+  if(!diagnosticLastRun)return;
+  const text=JSON.stringify(diagnosticLastRun,null,2);
+  await navigator.clipboard.writeText(text);
+  alert(t('diagnostics.reportCopied'));
+}
+
+function settingsView(v){
+  v.innerHTML=`<div class="card" style="max-width:720px">
+    <h3>${esc(t('settings.title'))}</h3>
+    <p class="muted">${esc(t('settings.explanation'))}</p>
+    <div class="field"><label>${esc(t('settings.uiLanguage'))}</label>
+      <select id="sUi">${locales.map(x=>`<option value="${esc(x.code)}">${esc(x.nativeLabel)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>${esc(t('settings.agentLanguage'))}</label>
+      <select id="sAgent">${locales.map(x=>`<option value="${esc(x.code)}">${esc(x.nativeLabel)}</option>`).join('')}</select>
+    </div>
+    <button class="primary" onclick="saveSettings()">${esc(t('settings.save'))}</button>
+  </div>`;
+  $('#sUi').value=locale;
+  $('#sAgent').value=settings.agentResponseLocale||locale;
+}
+
+async function saveSettings(){
+  const uiLocale=$('#sUi').value;
+  const agentResponseLocale=$('#sAgent').value;
+  settings=await j('/api/settings',{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({uiLocale,agentResponseLocale})
+  });
+  locale=uiLocale;
+  localStorage.setItem('doom-ui-locale',locale);
+  await loadMessages();
+  await loadData();
+  alert(t('settings.saved'));
+}
+
+boot().catch(e=>{$('#view').innerHTML='<pre>'+esc(e.stack||e.message)+'</pre>'});
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+HISTORICAL CANDIDATE RECORD — superseded by VALIDATION_v0.12.19.txt.
+The v0.12.18 source-only blocked-zero check and claimed diagnostic result were incomplete; live verification later exposed a failing negated-mutation case and an unbounded restart retry.
+
+Doom Core v0.12.18 validation
+- TypeScript syntax/transpile (30 files): PASS
+- plan-quality behavioral regression matching repo-health-check failure class: PASS
+- executable-instruction-only mutation classification: PASS
+- deterministic role-contract canonicalizer: PASS
+- initial/repair/final plan canonicalization hooks: PASS
+- blocked + zero-task planning failure autonomous replan on restart: PASS (source regression diagnostic included)
+- run.sh/setup.sh executable bits: set

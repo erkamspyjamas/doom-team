@@ -1,0 +1,29 @@
+{
+  "format": "doom-skill/v1",
+  "skill": {
+    "name": "Django Güvenli Kod İnceleme",
+    "slug": "django-secure-review",
+    "version": "1.0.0",
+    "description": "Django değişikliklerini güvenlik, ORM, auth ve migration riskleri açısından sistematik inceler.",
+    "requiredTools": [
+      "read_file",
+      "list_files",
+      "git_status",
+      "git_diff"
+    ],
+    "recommendedCapabilities": [
+      "tools",
+      "coding"
+    ],
+    "tags": [
+      "django",
+      "security",
+      "review"
+    ],
+    "instructions": "# Django Güvenli Kod İnceleme\n\nBir Django görevi aldığında önce ilgili settings, urls, views, forms/serializers, models ve migrationları incele. Auth/authz, CSRF, input validation, ORM sorguları, secrets ve tenant sınırlarını kontrol et. Bulguları confirmed/hypothesis olarak ayır. Kod değişikliği yapma görevi verilmediyse yalnızca raporla.\n"
+  },
+  "files": {
+    "SKILL.md": "# Django Güvenli Kod İnceleme\n\nBir Django görevi aldığında önce ilgili settings, urls, views, forms/serializers, models ve migrationları incele. Auth/authz, CSRF, input validation, ORM sorguları, secrets ve tenant sınırlarını kontrol et. Bulguları confirmed/hypothesis olarak ayır. Kod değişikliği yapma görevi verilmediyse yalnızca raporla.\n",
+    "references/checklist.md": "# Kontrol Listesi\n\n- DEBUG / ALLOWED_HOSTS / CORS / CSRF\n- Authentication ve object-level authorization\n- ORM injection ve raw SQL\n- Secrets ve log sızıntıları\n- Migration geri dönüş planı\n"
+  }
+}

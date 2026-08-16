@@ -1,0 +1,18 @@
+
+# ==================================================
+# Local secrets - NEVER COMMIT
+# ==================================================
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Runtime / database
+*.log
+*.sqlite
+*.sqlite3
+
+# OS/editor
+.DS_Store
