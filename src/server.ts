@@ -62,6 +62,8 @@ try {
   console.warn('Could not read package.json for version:', err);
 }
 
+export { version };
+
 await app.register(staticPlugin,{
   root:join(__dirname,'..','public'),
   prefix:'/',
@@ -76,7 +78,7 @@ function uiLocale(requested?:string) {
 app.get('/health',async()=>({
   status:'ok',
   doom:'online',
-  version:'0.12.19',
+  version,
   db:cfg.dbPath,
   defaultLocale:cfg.defaultLocale,
   installedRuntimeAdapters:installedRuntimeAdapters(),
@@ -647,9 +649,18 @@ app.post('/api/compatibility/direct-tool-test',async(req:any,reply)=>{
   return {pass,message:raw?.choices?.[0]?.message,raw};
 });
 
-app.listen({host:cfg.host,port:cfg.port}).then(()=>{
-  app.log.info(`Doom Core V${version}: http://${cfg.host}:${cfg.port}`);
-  app.log.info(`Registry UI: http://${cfg.host}:${cfg.port}/`);
-  const resumed=resumeAutonomousMissions();
-  app.log.info({resumed},'Autonomous mission recovery scan completed');
-});
+function startServer() {
+  return app.listen({host:cfg.host,port:cfg.port});
+}
+
+// When run directly `node src/server.ts` or via a loader like tsx, start the server
+if (import.meta.main) {
+  startServer().then(()=>{
+    app.log.info(`Doom Core V${version}: http://${cfg.host}:${cfg.port}`);
+    app.log.info(`Registry UI: http://${cfg.host}:${cfg.port}/`);
+    const resumed=resumeAutonomousMissions();
+    app.log.info({resumed},'Autonomous mission recovery scan completed');
+  });
+}
+
+export { app, startServer };
