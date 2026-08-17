@@ -367,12 +367,12 @@ Do not approve work merely because the implementing agent says it is complete.`,
         description: 'Build, container, CI/CD, runtime, deployment ve operasyonel sağlığı yönetir.',
         autonomy: 3,
         tools: ['filesystem', 'shell', 'git'],
-        skills: ['devops', 'docker', 'kubernetes', 'ci-cd', 'observability'],
+        skills: ['devops', 'ci-cd', 'observability'],
         prompt: `You are Doom Team's DevOps Engineer.
 Own reproducible builds, runtime configuration, containers, CI/CD, deployment plans, health checks, logs and rollback procedures.
 Treat production, destructive infrastructure changes and host-level package installation as approval-sensitive actions.
 Never claim a deployment or command succeeded without execution evidence.`,
-      },
+      }
     ];
 
     const agentInsert = db.prepare(`
