@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { loadConfig } from './config.js';
+import { readFileSync } from 'node:fs';
 import {
   listDiagnosticTests,runDiagnostics,missionCreatePreflight
 } from './diagnostics.js';
@@ -53,6 +54,13 @@ process.on('uncaughtException', (error) => {
 const cfg=loadConfig();
 const app=Fastify({logger:true});
 const __dirname=fileURLToPath(new URL('.',import.meta.url));
+let version = '0.12.19';
+try {
+  const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+  version = packageJson.version;
+} catch (err) {
+  console.warn('Could not read package.json for version:', err);
+}
 
 await app.register(staticPlugin,{
   root:join(__dirname,'..','public'),
@@ -640,7 +648,7 @@ app.post('/api/compatibility/direct-tool-test',async(req:any,reply)=>{
 });
 
 app.listen({host:cfg.host,port:cfg.port}).then(()=>{
-  app.log.info(`Doom Core V0.12.17: http://${cfg.host}:${cfg.port}`);
+  app.log.info(`Doom Core V${version}: http://${cfg.host}:${cfg.port}`);
   app.log.info(`Registry UI: http://${cfg.host}:${cfg.port}/`);
   const resumed=resumeAutonomousMissions();
   app.log.info({resumed},'Autonomous mission recovery scan completed');
