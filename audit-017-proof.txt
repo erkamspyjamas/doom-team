@@ -1,0 +1,6 @@
+Release audit for package 017 completed.
+Typecheck passes, all 68 tests pass.
+No legacy docker/kubernetes grants found in agent_default_devops.
+No unknown tool grants found in agents or templates.
+Model probe diagnostics show expected fetch failures for local Ollama (not a blocker).
+Diagnostics: 48 pass, 1 warn (models.saved_probes - incomplete probes for local Ollama), 0 fail.
