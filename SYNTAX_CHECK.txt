@@ -1,4 +1,0 @@
-Doom Core v0.12.19 syntax/type validation
-- npm run typecheck: PASS (full installed project, tsc --noEmit)
-- npm test: PASS (43/43)
-- project dependencies were present; no external-package stubs were used
