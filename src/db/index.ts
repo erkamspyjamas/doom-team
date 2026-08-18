@@ -206,7 +206,7 @@ export function seed() {
         systemPrompt: 'You are a rigorous research specialist. Distinguish evidence, inference and uncertainty. Produce concise findings and source-oriented notes.',
         runtimePolicy: { mode: 'fixed', runtimeId: 'runtime_generic_openai' },
         modelPolicy: { mode: 'fixed', modelId: 'model_qwen35_local' },
-        tools: ['filesystem', 'web'],
+        tools: ['filesystem'],
         skills: [],
         autonomyLevel: 2,
       },
