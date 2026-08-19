@@ -267,7 +267,7 @@ function tryExtractMissionPlanJson(text: string): any | null {
 function attemptJsonRepair(text: string): string | null {
   let repaired = text.trim();
 
-  repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
+  repaired = repaired.replace(/,(\s*[\]\}])/g, '$1');
 
   let openBraces = 0;
   let openBrackets = 0;
@@ -289,7 +289,21 @@ function attemptJsonRepair(text: string): string | null {
   try {
     JSON.parse(repaired);
     return repaired;
-  } catch {
+  } catch (e) {
+    // If still invalid, try to remove excess characters from the end
+    let maxAttempts = 100;
+    let attempt = 0;
+    let current = repaired;
+    while (attempt < maxAttempts && current.length > 0) {
+      try {
+        JSON.parse(current);
+        return current;
+      } catch (e2) {
+        // Remove last character and try again
+        current = current.slice(0, -1);
+        attempt++;
+      }
+    }
     return null;
   }
 }

@@ -64,6 +64,26 @@ test('attemptJsonRepair returns null for irreparable JSON', () => {
   assert.equal(repaired, null);
 });
 
+test('attemptJsonRepair handles excess closing braces', () => {
+  // Test case: JSON with excess closing braces that should be repairable
+  const text = '{"tasks":[{"key":"T1","title":"Test","instruction":"Create file","expectedOutcome":"File created","workMode":"modify","assignedAgentId":"backend","dependsOn":[],"acceptanceCriteria":["Done"]}]} }';
+  const repaired = attemptJsonRepair(text);
+  assert.ok(repaired, 'Should repair JSON with excess closing brace');
+  const parsed = JSON.parse(repaired);
+  assert.equal(parsed.tasks.length, 1);
+  assert.equal(parsed.tasks[0].key, 'T1');
+});
+
+test('attemptJsonRepair handles multiple excess closing braces', () => {
+  // Test case with multiple excess closing braces
+  const text = '{"tasks":[{"key":"T1"}]} } }';
+  const repaired = attemptJsonRepair(text);
+  assert.ok(repaired, 'Should repair JSON with multiple excess closing braces');
+  const parsed = JSON.parse(repaired);
+  assert.equal(parsed.tasks.length, 1);
+  assert.equal(parsed.tasks[0].key, 'T1');
+});
+
 test('tryExtractMissionPlanJson extracts valid plan from reasoning text', () => {
   const text = `Here is my reasoning for the plan.
   
