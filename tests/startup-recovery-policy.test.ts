@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
+  decideInterruptedTaskExecution,
   decideStartupRecovery,
   hasUnusedTaskRecoveryBudget,
   isRecoverablePlanningFailure,
@@ -192,4 +193,49 @@ test('failed recovery decisions can resume only while bounded budget remains',()
     maxMissionAttempts:8,
     maxTaskAttempts:3,
   }),false);
+});
+
+test('interrupted running task fails closed for missing and non-error execution states',()=>{
+  const cases:Array<[unknown,string]> = [
+    ['running','running'],
+    [undefined,'missing'],
+    [null,'missing'],
+    ['done','done'],
+    ['cancelled','cancelled'],
+    ['unexpected','unexpected'],
+  ];
+
+  for(const [status,detail] of cases){
+    assert.deepEqual(
+      decideInterruptedTaskExecution({status}),
+      {
+        action:'recovery_required',
+        detail,
+      },
+    );
+  }
+});
+
+test('explicit execution error remains eligible for existing bounded task recovery',()=>{
+  assert.deepEqual(
+    decideInterruptedTaskExecution({
+      status:'error',
+      errorText:'worker failed',
+    }),
+    {
+      action:'mark_failed',
+      errorText:'worker failed',
+    },
+  );
+
+  assert.deepEqual(
+    decideInterruptedTaskExecution({
+      status:'error',
+      errorText:'',
+    }),
+    {
+      action:'mark_failed',
+      errorText:'EXECUTION_FAILED',
+    },
+  );
 });

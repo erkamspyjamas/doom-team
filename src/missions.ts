@@ -31,6 +31,7 @@ import {
   taskRecoveryAttemptCount,
 } from './recovery-budget.js';
 import {
+  decideInterruptedTaskExecution,
   decideStartupRecovery,
   hasUnusedTaskRecoveryBudget,
   MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
@@ -3276,14 +3277,23 @@ async function missionLoop(missionId:string) {
         // V0.9 executes a task atomically inside this process. A running row here is
         // usually a restart recovery case. We do not silently duplicate it.
         const exec:any=running.execution_id ? getExecution(running.execution_id) : null;
-        if(exec?.status==='running'){
-          throw new Error(`MISSION_RECOVERY_REQUIRED:${running.task_key}`);
-        }
-        if(exec?.status==='error'){
+        const recoveryDecision=decideInterruptedTaskExecution({
+          status:exec?.status,
+          errorText:exec?.error_text,
+        });
+
+        if(recoveryDecision.action==='mark_failed'){
           db.prepare(`UPDATE mission_tasks SET status='failed',error_text=?,updated_at=? WHERE id=?`)
-            .run(exec.error_text ?? 'EXECUTION_FAILED',now(),running.id);
+            .run(recoveryDecision.errorText,now(),running.id);
           continue;
         }
+
+        const detail=recoveryDecision.detail;
+        throw new Error(
+          detail==='running'
+            ? `MISSION_RECOVERY_REQUIRED:${running.task_key}`
+            : `MISSION_RECOVERY_REQUIRED:${running.task_key}:${detail}`
+        );
       }
 
       const tasks=taskRows(missionId);

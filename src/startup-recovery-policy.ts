@@ -77,6 +77,52 @@ export type StartupRecoveryDecision = {
   autonomousReplanBudget: number;
 };
 
+export type InterruptedTaskExecutionDecision =
+  | {
+      action: 'mark_failed';
+      errorText: string;
+    }
+  | {
+      action: 'recovery_required';
+      detail: string;
+    };
+
+export function decideInterruptedTaskExecution(input:{
+  status?: unknown;
+  errorText?: unknown;
+}):InterruptedTaskExecutionDecision {
+  const status =
+    typeof input.status === 'string'
+      ? input.status.trim()
+      : '';
+
+  if(status === 'error'){
+    const errorText =
+      typeof input.errorText === 'string'
+      && input.errorText.trim()
+        ? input.errorText
+        : 'EXECUTION_FAILED';
+
+    return {
+      action: 'mark_failed',
+      errorText,
+    };
+  }
+
+  /*
+   * Any non-error execution attached to a task that is still
+   * running/validating is ambiguous after interruption.
+   *
+   * In particular, "done" does not prove that all task-level
+   * side effects, evidence, validation and state transitions
+   * completed. Never silently replay or advance other work.
+   */
+  return {
+    action: 'recovery_required',
+    detail: status || 'missing',
+  };
+}
+
 export function hasUnusedTaskRecoveryBudget(input:{
   missionAttempts:number;
   taskAttempts:number;
