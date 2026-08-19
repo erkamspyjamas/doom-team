@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "project": "doom-team",
+  "boardId": "doom-core-autopilot-v2",
+  "branch": "openclaw/autopilot",
+  "terminalPolicy": "human-final-approval",
+  "phases": [
+    {
+      "id": "phase-1a",
+      "title": "Mission Completion Reliability",
+      "brief": "docs/doom-team/tasks/phase-1-mission-completion-reliability.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 2400,
+        "reviewer": 1800
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1-mission-reliability-dev-v1",
+        "qa": "human-doom-phase1-mission-reliability-qa-v1",
+        "reviewer": "human-doom-phase1-mission-reliability-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-1b",
+      "title": "Next Mission Reliability Slice",
+      "brief": "docs/doom-team/tasks/phase-1b-next-mission-reliability-slice.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1b-reliability-dev-v1",
+        "qa": "human-doom-phase1b-reliability-qa-v1",
+        "reviewer": "human-doom-phase1b-reliability-reviewer-v1"
+      }
+    }
+  ]
+}
