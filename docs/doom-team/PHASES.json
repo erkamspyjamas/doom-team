@@ -44,6 +44,86 @@
         "qa": "human-doom-phase1b-reliability-qa-v1",
         "reviewer": "human-doom-phase1b-reliability-reviewer-v1"
       }
+    },
+    {
+      "id": "phase-1c",
+      "title": "Next Mission Reliability Slice",
+      "brief": "docs/doom-team/tasks/phase-1c-next-mission-reliability-slice.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1c-reliability-dev-v1",
+        "qa": "human-doom-phase1c-reliability-qa-v1",
+        "reviewer": "human-doom-phase1c-reliability-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-1d",
+      "title": "Next Mission Reliability Slice",
+      "brief": "docs/doom-team/tasks/phase-1d-next-mission-reliability-slice.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1d-reliability-dev-v1",
+        "qa": "human-doom-phase1d-reliability-qa-v1",
+        "reviewer": "human-doom-phase1d-reliability-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-1e",
+      "title": "Next Mission Reliability Slice",
+      "brief": "docs/doom-team/tasks/phase-1e-next-mission-reliability-slice.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1e-reliability-dev-v1",
+        "qa": "human-doom-phase1e-reliability-qa-v1",
+        "reviewer": "human-doom-phase1e-reliability-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-1f",
+      "title": "Next Mission Reliability Slice",
+      "brief": "docs/doom-team/tasks/phase-1f-next-mission-reliability-slice.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase1f-reliability-dev-v1",
+        "qa": "human-doom-phase1f-reliability-qa-v1",
+        "reviewer": "human-doom-phase1f-reliability-reviewer-v1"
+      }
     }
   ]
 }
