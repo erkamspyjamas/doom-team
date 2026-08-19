@@ -13,6 +13,7 @@ import {
   taskCommunicationContext,prerequisiteArtifactContext,publishTaskArtifact,
   createAutomaticHandoffs,taskArtifacts,missionArtifacts,listMessages,publishMessage
 } from './communications.js';
+import { attemptJsonRepair } from './runtime/generic-openai.js';
 import {
   ensureMissionIntegrationWorkspace,
   createTaskWorktree,
@@ -155,19 +156,87 @@ async function waitForExecution(executionId:string, timeoutMs=15*60*1000) {
   throw new Error('EXECUTION_WAIT_TIMEOUT');
 }
 
-function extractJsonObject(text:string) {
+export function extractJsonObject(text:string) {
   const raw=String(text ?? '').trim();
+  
+  // Try direct parse first
+  try { return JSON.parse(raw); } catch {}
+  
+  // Try fenced JSON
   const fenced=raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate=(fenced?.[1] ?? raw).trim();
-
-  try{return JSON.parse(candidate)}
-  catch{}
-
-  const first=candidate.indexOf('{');
-  const last=candidate.lastIndexOf('}');
-  if(first>=0 && last>first){
-    return JSON.parse(candidate.slice(first,last+1));
+  if (fenced) {
+    try { return JSON.parse(fenced[1].trim()); } catch {}
   }
+
+  // Extract balanced JSON objects (like in generic-openai.ts)
+  const extractBalancedJsonObjects = (inputText: string): string[] => {
+    const results: string[] = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < inputText.length; i++) {
+      const ch = inputText[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === '"' && !escape) {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (ch === '}') {
+        if (depth > 0) {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            results.push(inputText.slice(start, i + 1));
+            start = -1;
+          }
+        }
+      }
+    }
+
+    return results;
+  };
+
+  const balancedObjects = extractBalancedJsonObjects(raw);
+  for (const obj of balancedObjects) {
+    try { return JSON.parse(obj.trim()); } catch {}
+    // Try repairing if direct parse fails
+    const repaired = attemptJsonRepair(obj.trim());
+    if (repaired) {
+      try { return JSON.parse(repaired); } catch {}
+    }
+  }
+
+  // Fallback to original approach for backward compatibility
+  const first=raw.indexOf('{');
+  if (first >= 0) {
+    let end = raw.lastIndexOf('}');
+    if (end <= first) {
+      // No closing brace after the opening brace, so we use the rest of the string.
+      end = raw.length;
+    }
+    const substring = raw.slice(first, end);
+    try { return JSON.parse(substring); } catch {}
+    // Try repairing the fallback
+    const repaired = attemptJsonRepair(substring);
+    if (repaired) {
+      try { return JSON.parse(repaired); } catch {}
+    }
+  }
+
   throw new Error('JSON_OBJECT_NOT_FOUND');
 }
 
