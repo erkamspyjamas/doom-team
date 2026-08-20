@@ -2264,7 +2264,30 @@ function validateDependencyPatch(missionId:string,taskId:string,dependsOnTaskKey
   return depIds;
 }
 
+function assertMissionTaskExecutionInactive(
+  task:any,
+  errorCode:'MISSION_RECOVERY_REQUIRED'|'DUPLICATE_EXECUTION_PREVENTED'
+){
+  if(!task?.execution_id)return;
+
+  const execution:any=getExecution(
+    String(task.execution_id)
+  );
+
+  if(
+    execution &&
+    ['running','validating'].includes(
+      String(execution.status)
+    )
+  ){
+    throw new Error(
+      `${errorCode}:${String(task.task_key)}:active_execution_must_be_terminal`
+    );
+  }
+}
+
 function applyRecoveryTaskReset(mission:any,task:any,guidance:string,eventType:string){
+  assertMissionTaskExecutionInactive(task,'MISSION_RECOVERY_REQUIRED');
   db.prepare(`
     UPDATE mission_tasks
     SET status='pending',execution_id=NULL,result_text=NULL,error_text=NULL,
@@ -4331,6 +4354,8 @@ export function retryMissionTask(missionId:string,taskId:string) {
   `).get(taskId,missionId);
   if(!task)throw new Error('MISSION_TASK_NOT_FOUND');
   if(!['failed','blocked'].includes(task.status))throw new Error('MISSION_TASK_NOT_RETRYABLE');
+
+  assertMissionTaskExecutionInactive(task,'DUPLICATE_EXECUTION_PREVENTED');
 
   db.prepare(`
     UPDATE mission_tasks
