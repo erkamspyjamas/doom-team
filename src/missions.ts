@@ -3169,10 +3169,21 @@ Return ONLY JSON:
 Fail when a material acceptance, correctness, test or maintainability issue remains.`;
 }
 
-async function runFinalMissionGate(
+type FinalGateExecutionOps={
+  startExecution:typeof startExecution;
+  waitForExecution:typeof waitForExecution;
+};
+
+const defaultFinalGateExecutionOps:FinalGateExecutionOps={
+  startExecution,
+  waitForExecution,
+};
+
+export async function runFinalMissionGate(
   mission:any,
   gateType:'qa'|'reviewer',
   workspace:string,
+  executionOps:FinalGateExecutionOps=defaultFinalGateExecutionOps,
 ){
   const agent=findTeamAgentByRole(mission.team_id,gateType);
   if(!agent){
@@ -3186,7 +3197,7 @@ async function runFinalMissionGate(
     baseCommit:missionWs.base_commit
   });
 
-  const execution:any=await startExecution(
+  const execution:any=await executionOps.startExecution(
     agent.id,
     finalGatePrompt(
       gateType,
@@ -3208,10 +3219,15 @@ async function runFinalMissionGate(
   const gateId=createGate(mission.id,null,gateType,agent.id,execution.id);
   event(mission.id,`gate.${gateType}_started`,{gateId,executionId:execution.id,agentId:agent.id});
 
-  const finished:any=await waitForExecution(execution.id);
+  const finished:any=await executionOps.waitForExecution(execution.id);
   if(finished.status!=='done'){
-    updateGate(gateId,finished.status==='cancelled'?'cancelled':'error',`${gateType} gate execution ${finished.status}.`,{error:finished.error_text});
-    return {pass:false,gateId,summary:`${gateType} gate execution ${finished.status}.`};
+    const gateFailure=`${gateType} gate execution ${finished.status}.`;
+    const errorText=`FINAL_GATE_EXECUTION_${String(finished.status ?? 'UNKNOWN').toUpperCase()}:${gateType}`;
+    updateGate(gateId,finished.status==='cancelled'?'cancelled':'error',gateFailure,{error:finished.error_text});
+    db.prepare(`UPDATE missions SET status='blocked',error_text=?,updated_at=? WHERE id=?`)
+      .run(errorText,now(),mission.id);
+    event(mission.id,'mission.blocked',{reason:errorText,gateId});
+    return {pass:false,gateId,summary:gateFailure};
   }
 
   try{
