@@ -2286,6 +2286,38 @@ function assertMissionTaskExecutionInactive(
   }
 }
 
+/**
+ * recoveryWorkTreeHasIntegratedWork
+ *
+ * Returns true when the LATEST worktree row for the given task already
+ * carries a non-null commit_hash or merge_commit, meaning the task's
+ * repository changes have been integrated into the mission integration
+ * branch.  Any further autonomous recovery that tries to clean or reset
+ * the worktree would destroy or duplicate published progress, so recovery
+ * must be refused instead of entered.
+ *
+ * Note: we only check the latest row (ORDER BY attempt_no DESC LIMIT 1)
+ * because that row represents the most recently-prepared workspace.
+ * If it is already integrated, advancing to an older unmerged attempt
+ * would not pick up newer changes and is not correct recovery behavior.
+ */
+export function recoveryWorkTreeHasIntegratedWork(
+  database:any,
+  taskId:string
+):boolean{
+  const ws:any=database.prepare(`
+    SELECT commit_hash, merge_commit
+    FROM mission_task_workspaces
+    WHERE task_id=?
+    ORDER BY attempt_no DESC
+    LIMIT 1
+  `).get(taskId);
+
+  if(!ws)return false;
+  return ws.commit_hash !== null && ws.commit_hash !== undefined
+    || ws.merge_commit !== null && ws.merge_commit !== undefined;
+}
+
 function applyRecoveryTaskReset(mission:any,task:any,guidance:string,eventType:string){
   assertMissionTaskExecutionInactive(task,'MISSION_RECOVERY_REQUIRED');
   db.prepare(`
@@ -2659,7 +2691,29 @@ async function runLeadRecoveryDecision(mission:any,kind:'task'|'final_gate',fail
   return action;
 }
 
-async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):Promise<RecoveryResult>{
+export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):Promise<RecoveryResult>{
+  // ── Defect fix (phase-1f): pre-check for already-integrated worktree ──
+  //
+  // If the task's latest worktree has been committed and merged into the
+  // integration branch, recovery would either destroy or duplicate published
+  // progress.  Refuse recovery explicitly instead of entering the expensive
+  // (and ultimately self-defeating) cleanup → lead-decision → action pipeline.
+  //
+  // Without this guard the pipeline throws RECOVERY_REFUSED_INTEGRATED_TASK
+  // from within cleanupFailedTaskAttempt, which is caught as a generic recovery
+  // failure; the budget-tracking event (lead.recovery_attempt_started) is still
+  // written but no budget counter observable to decideStartupRecovery is
+  // incremented, so the mission gets silently re-attempted on every restart
+  // and other tasks in the same mission can be permanently stranded.
+  if(recoveryWorkTreeHasIntegratedWork(db, failedTask.id)){
+    event(mission.id,'lead.recovery_integrated_task_refused',{
+      taskKey:failedTask.task_key,
+      reason:'RECOVERY_REFUSED_INTEGRATED_TASK',
+      message:'Latest worktree already integrated; recovery would duplicate or destroy published progress.'
+    },failedTask.id);
+    return {recovered:false,reason:'RECOVERY_REFUSED_INTEGRATED_TASK'};
+  }
+
   const missionAttempts=appliedMissionRecoveryCount(mission.id);
   const taskAttempts=appliedTaskRecoveryCount(mission.id,failedTask.id);
   if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || taskAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_TASK){
