@@ -124,6 +124,86 @@
         "qa": "human-doom-phase1f-reliability-qa-v1",
         "reviewer": "human-doom-phase1f-reliability-reviewer-v1"
       }
+    },
+    {
+      "id": "phase-2a",
+      "title": "Worktree / Forensic Safety — Dirty/Ahead Pre-Cleanup Guard",
+      "brief": "docs/doom-team/tasks/phase-2a-dirty-ahead-pre-cleanup-guard.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase2a-forensic-safety-dev-v1",
+        "qa": "human-doom-phase2a-forensic-safety-qa-v1",
+        "reviewer": "human-doom-phase2a-forensic-safety-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-2b",
+      "title": "Worktree / Forensic Safety — Forensic Retention Artifact",
+      "brief": "docs/doom-team/tasks/phase-2b-forensic-retention-artifact.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase2b-forensic-retention-dev-v1",
+        "qa": "human-doom-phase2b-forensic-retention-qa-v1",
+        "reviewer": "human-doom-phase2b-forensic-retention-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-2c",
+      "title": "Worktree / Forensic Safety — Crash-Window & Replan Snapshot",
+      "brief": "docs/doom-team/tasks/phase-2c-crash-window-replan-snapshot.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase2c-forensic-snapshot-dev-v1",
+        "qa": "human-doom-phase2c-forensic-snapshot-qa-v1",
+        "reviewer": "human-doom-phase2c-forensic-snapshot-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-2d",
+      "title": "Worktree / Forensic Safety — Lossless Cleanup Provenance",
+      "brief": "docs/doom-team/tasks/phase-2d-lossless-cleanup-provenance.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase2d-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase2d-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase2d-cleanup-provenance-reviewer-v1"
+      }
     }
   ]
 }
