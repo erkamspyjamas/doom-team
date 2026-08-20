@@ -205,6 +205,103 @@ export async function commitAndMergeTask(input:{
   };
 }
 
+export type WorktreeStateClassification = {
+  clean: boolean;
+  dirty: boolean;          // uncommitted changes in working tree
+  ahead: number;           // 0 = at base; >0 = worktree branch commits not in base
+  upstream: string | null;
+  changedPaths: string[];
+};
+
+export async function classifyWorktreeState(
+  workspace: string,
+  baseCommit?: string
+): Promise<WorktreeStateClassification> {
+  let upstream: string | null = null;
+  let ahead = 0;
+
+  try {
+    const branch = await git(workspace, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch !== 'HEAD') {
+      const up = await git(workspace, [
+        'for-each-ref',
+        '--format=%(upstream:short)',
+        `refs/heads/${branch}`,
+      ]).catch(() => '');
+      upstream = up || null;
+      if (upstream) {
+        const aheadOut = await git(
+          workspace,
+          ['rev-list', '--count', `${upstream}..HEAD`]
+        );
+        ahead = Number.parseInt(aheadOut, 10) || 0;
+      }
+    }
+  } catch {
+    ahead = 0;
+    upstream = null;
+  }
+
+  const porcelain = await git(workspace, ['status', '--porcelain=v1']);
+  const dirty = porcelain.trim().length > 0;
+  // `clean` describes the working-tree state (uncommitted changes present or not).
+  // Branch divergence (ahead) is tracked separately and enforced by guard logic.
+  const clean = !dirty;
+  const changedPaths = porcelain
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      // porcelain format: XY path or ?? path
+      const idx = l.search(/ [^ ]/);          // first char after the leading status + space
+      const raw = idx > 0 ? l.slice(idx + 1) : l;
+      const target = raw.includes(' -> ') ? raw.split(' -> ').pop()! : raw;
+      return target.replace(/^\"(.*)\"$/, '$1').trimEnd();
+    })
+    .filter(Boolean);
+
+  return { clean, dirty, ahead, upstream, changedPaths: [...new Set(changedPaths)] };
+}
+
+export async function preCleanupWorktreeGuard(input: {
+  workspace: string;
+  baseCommit: string;
+  /**
+   * When true the caller already durably captured the work tree's full
+   * evidence externally (e.g. in the DB or an evidence artifact) and the
+   * worktree's own state no longer needs to be preserved.
+   */
+  evidencePreserved: boolean;
+  context: string;
+}): Promise<void> {
+  const state = await classifyWorktreeState(input.workspace, input.baseCommit);
+
+  // If the DB record already captures the worktree's real commit/merge state
+  // (commit_hash != null || merge_commit != null) then cleanup is safe
+  // regardless of any discrepancy in the working tree vs what is preserved.
+  if (input.evidencePreserved) return;
+
+  // No DB-preserved evidence: refuse unless the working tree is trivially
+  // safe (no uncommitted changes, ≤1 commit divergence from base).
+  if (!state.dirty && state.ahead <= 1) return;
+
+  // Build a concrete description of why cleanup would lose evidence.
+  const reasons: string[] = [];
+  if (state.dirty) {
+    reasons.push(
+      `${state.changedPaths.length} uncommitted path(s): ` +
+      [...new Set(state.changedPaths)].slice(0, 5).join(', ')
+    );
+  }
+  if (state.ahead > 1) {
+    reasons.push(`worktree is ${state.ahead} commits ahead of ${input.baseCommit.slice(0, 7)}`);
+  }
+
+  throw new Error(
+    `PRE_CLEANUP_WORKTREE_BLOCKED:${input.context}:` + reasons.join('; ')
+  );
+}
+
 export async function removeTaskWorktree(input:{
   baseWorkspace:string;
   workspace:string;

@@ -22,6 +22,8 @@ import {
   removeTaskWorktree,
   inspectGitWorkspace,
   missionIntegrationEvidence,
+  classifyWorktreeState,
+  preCleanupWorktreeGuard,
 } from './git/worktrees.js';
 import { preserveMissionTaskEventsForReplan } from './replan-history.js';
 import {
@@ -1545,6 +1547,14 @@ async function finalizeAcceptedTaskWorkspace(
 
   if(workMode==='analysis' || workMode==='validate'){
     const beforeCleanup=await taskWorkspaceEvidence(prepared.workspace);
+    // Readonly worktrees must not silently discard uncommitted forensic evidence.
+    const evidencePreserved=!beforeCleanup.clean;
+    await preCleanupWorktreeGuard({
+      workspace:prepared.workspace,
+      baseCommit:missionWs.base_commit,
+      evidencePreserved,
+      context:`finalizeAccepted:${task.task_key}:readonly`
+    });
     const cleanup=await removeTaskWorktree({
       baseWorkspace:missionWs.base_workspace,
       workspace:prepared.workspace,
@@ -2191,6 +2201,13 @@ async function cleanupFailedTaskAttempt(mission:any,task:any){
   }
 
   const missionWs=getMissionWorkspaceRecord(mission.id);
+  const evidencePreserved=Boolean(ws.commit_hash || ws.merge_commit);
+  await preCleanupWorktreeGuard({
+    workspace:ws.workspace_path,
+    baseCommit:missionWs.base_commit,
+    evidencePreserved,
+    context:`cleanupFailedTaskAttempt:${task.task_key}`
+  });
   const cleanup=await removeTaskWorktree({
     baseWorkspace:missionWs.base_workspace,
     workspace:ws.workspace_path,
@@ -3771,6 +3788,14 @@ export async function replanMission(missionId:string){
   if(missionWs?.mode==='isolated'){
     for(const row of taskWorkspaces){
       if(!row.workspace_path || !row.branch_name)continue;
+
+      const evidencePreservedReplan=Boolean(row.commit_hash || row.merge_commit);
+      await preCleanupWorktreeGuard({
+        workspace:row.workspace_path,
+        baseCommit:row.base_commit || missionWs.base_commit,
+        evidencePreserved:evidencePreservedReplan,
+        context:`replan_cleanup:${row.task_key}`
+      });
 
       const cleanup=await removeTaskWorktree({
         baseWorkspace:missionWs.base_workspace,
