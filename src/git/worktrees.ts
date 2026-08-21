@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFile } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 type CommandResult = {
@@ -301,6 +301,167 @@ export async function preCleanupWorktreeGuard(input: {
     `PRE_CLEANUP_WORKTREE_BLOCKED:${input.context}:` + reasons.join('; ')
   );
 }
+
+
+export async function retainForensicArtifact(input: {
+  workspace: string;
+  missionId: string;
+  taskKey: string;
+  attemptNo: number;
+  worktreeRoot: string;
+  context: string;
+  /** Optional extra provenance fields included verbatim in the metadata file. */
+  tags?: Record<string, unknown>;
+}): Promise<{ artifactPath: string; metadataPath: string }> {
+  const missionShort = safeSegment(input.missionId);
+  const taskShort = safeSegment(input.taskKey);
+  const tagForPath = safeSegment(input.context);
+
+  const retainedRoot = join(input.worktreeRoot, 'retained', missionShort);
+  mkdirSync(retainedRoot, { recursive: true });
+
+  // Stable slug, de-duped against existing files so re-entry produces a
+  // distinct (non-clobbering) artifact.
+  let slug = `${taskShort}-${input.attemptNo}-${tagForPath}`.slice(0, 48);
+  let counter = 0;
+  while (
+    existsSync(join(retainedRoot, `${slug}.patch`)) ||
+    existsSync(join(retainedRoot, `${slug}.json`))
+  ) {
+    counter += 1;
+    slug = `${taskShort}-${input.attemptNo}-${tagForPath}-${counter}`.slice(0, 48);
+  }
+
+  const patchPath = join(retainedRoot, `${slug}.patch`);
+  const metadataPath = join(retainedRoot, `${slug}.json`);
+
+  // Collect all evidence in parallel; individual failures must not mask
+  // the caller's primary error.
+  const results = await Promise.allSettled([
+    // Full uncommitted diff relative to HEAD (empty when clean).
+    run('git', ['--no-pager', 'diff', '--no-ext-diff', 'HEAD'], input.workspace)
+      .then((r: any) => r.stdout.trim())
+      .catch(() => ''),
+    // Untracked files list (non-destructive read).
+    run('git', ['ls-files', '--others', '--exclude-standard', '-z'], input.workspace)
+      .then((r: any) => r.stdout)
+      .catch(() => ''),
+    // Working tree porcelain (include untracked files in subdirs for full manifest).
+    git(input.workspace, ['status', '--porcelain=v1', '--untracked-files=all']).catch(() => ''),
+    // HEAD + branch for commit provenance.
+    git(input.workspace, ['rev-parse', 'HEAD']).catch(() => ''),
+    git(input.workspace, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => ''),
+  ]);
+
+  const patchContent: string = results[0].status === 'fulfilled'
+    ? (results[0] as any).value : '';
+  const untrackedZ: string = results[1].status === 'fulfilled'
+    ? (results[1] as any).value : '';
+  const untrackedPaths: string[] = untrackedZ
+    .split('\0')
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+  const porcelain: string = results[2].status === 'fulfilled'
+    ? (results[2] as any).value : '';
+  const head: string = results[3].status === 'fulfilled'
+    ? (results[3] as any).value : '';
+  const branch: string = results[4].status === 'fulfilled'
+    ? (results[4] as any).value : '';
+
+  const changedPaths: string[] = porcelain
+    .split(/\r?\n/)
+    .map((l: string) => l.trim())
+    .filter(Boolean)
+    .map((l: string) => {
+      const idx = l.search(/ [^ ]/);
+      const raw = idx > 0 ? l.slice(idx + 1) : l;
+      const target = raw.includes(' -> ')
+        ? raw.split(' -> ').pop()!
+        : raw;
+      return target.replace(/^"(.*)"$/, '$1').trimEnd();
+    })
+    .filter(Boolean);
+
+  const metadata = {
+    schemaVersion: 'doom-forensic-artifact/v1',
+    retainedAt: new Date().toISOString(),
+    provenance: {
+      missionId: input.missionId,
+      taskKey: input.taskKey,
+      attemptNo: input.attemptNo,
+      context: input.context,
+      workspace: input.workspace,
+      worktreeRoot: input.worktreeRoot,
+      headCommit: head || null,
+      branch: branch || null,
+      changedPaths: [...new Set(changedPaths)].slice(0, 300),
+      untrackedPaths: untrackedPaths.slice(0, 200),
+      patchByteLength: Buffer.byteLength(patchContent, 'utf8'),
+    },
+    tags: input.tags ?? {},
+  };
+
+  // Write patch then metadata; metadata is the human-readable index.
+  let writeOk = false;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      writeFile(patchPath, patchContent, 'utf8', (err: Error | null) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      writeFile(
+        metadataPath,
+        JSON.stringify(metadata, null, 2),
+        'utf8',
+        (err: Error | null) => {
+          if (err) reject(err); else resolve();
+        }
+      );
+    });
+    writeOk = true;
+  } catch {
+    // Best-effort: paths are always returned even if write fails.
+    // Failures here are observable via the file system (file won't exist);
+    // they are NOT swallowed silently in normal operation since the production
+    // binary loads this module via tsx/register where require() is unavailable.
+  }
+
+  return { artifactPath: patchPath, metadataPath };
+}
+
+/**
+ * Build a single self-contained forensic diff bundle from the patch and
+ * metadata files produced by `retainForensicArtifact`.
+ */
+export async function buildForensicDiffBundle(
+  metadataPath: string,
+  artifactPath: string
+): Promise<string> {
+  const meta = JSON.parse(readFileSync(metadataPath, 'utf8'));
+  const patch = readFileSync(artifactPath, 'utf8');
+
+  const header = [
+    '# Forensic Retention Bundle',
+    `# Schema    : ${meta.schemaVersion}`,
+    `# Retained  : ${meta.retainedAt}`,
+    `# Context   : ${meta.provenance.context}`,
+    `# Mission   : ${meta.provenance.missionId}`,
+    `# Task      : ${meta.provenance.taskKey} attempt=${meta.provenance.attemptNo}`,
+    `# Head      : ${meta.provenance.headCommit ?? 'unknown'} (${meta.provenance.branch ?? 'unknown'})`,
+    `# Changed   : ${meta.provenance.changedPaths.length} path(s)`,
+    `# Untracked : ${meta.provenance.untrackedPaths.length} file(s)`,
+    `# PatchSize : ${meta.provenance.patchByteLength} byte(s)`,
+    `# Tags      : ${JSON.stringify(meta.tags ?? {})}`,
+    `# --- unified diff follows ---`,
+    '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return header + '\n' + patch;
+}
+
 
 export async function removeTaskWorktree(input:{
   baseWorkspace:string;

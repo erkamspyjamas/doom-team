@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import test from 'node:test';
 import {
   taskWorkspaceEvidence,
   classifyWorktreeState,
   preCleanupWorktreeGuard,
+  retainForensicArtifact,
+  buildForensicDiffBundle,
 } from '../src/git/worktrees.js';
 
 function git(workspace: string, args: string[]) {

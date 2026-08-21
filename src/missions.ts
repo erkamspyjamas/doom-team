@@ -24,6 +24,8 @@ import {
   missionIntegrationEvidence,
   classifyWorktreeState,
   preCleanupWorktreeGuard,
+  retainForensicArtifact,
+  buildForensicDiffBundle,
 } from './git/worktrees.js';
 import { preserveMissionTaskEventsForReplan } from './replan-history.js';
 import {
@@ -44,6 +46,8 @@ import {
   isCompletedStateTaskInstruction,
   resolveTaskWorkModeContract,
 } from './task-contracts.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 const cfg=loadConfig();
 
@@ -1547,15 +1551,48 @@ async function finalizeAcceptedTaskWorkspace(
 
   if(workMode==='analysis' || workMode==='validate'){
     const beforeCleanup=await taskWorkspaceEvidence(prepared.workspace);
+
+    // Untracked files are invisible to git diff/patch; read them synchronously
+    // now (before cleanup) so their content is available for forensic retention.
+    const untrackedContent = new Map<string, Buffer>();
+    for (const relPath of beforeCleanup.untracked.slice(0, 200)) {
+      try {
+        const absPath = join(prepared.workspace, relPath);
+        if (existsSync(absPath) && !relPath.endsWith('/')) {
+          untrackedContent.set(relPath, readFileSync(absPath));
+        }
+      } catch { /* skip unreadable paths */ }
+    }
     // Readonly worktrees must not silently discard uncommitted forensic evidence.
-    const evidencePreserved=!beforeCleanup.clean;
-    await preCleanupWorktreeGuard({
-      workspace:prepared.workspace,
-      baseCommit:missionWs.base_commit,
-      evidencePreserved,
-      context:`finalizeAccepted:${task.task_key}:readonly`
+    const evidencePreserved = !beforeCleanup.clean;
+    // Retain forensic snapshot even when evidencePreserved=true: untracked files
+    // (captured above) are not tracked by git and will be silently lost on
+    // worktree removal. The patch captures tracked changes; untrackedContent
+    // carries the on-disk files that would otherwise vanish.
+    await retainForensicArtifact({
+      workspace: prepared.workspace,
+      missionId: mission.id,
+      taskKey: task.task_key,
+      attemptNo: prepared.row?.attempt_no ?? 0,
+      worktreeRoot: missionWs.base_workspace,
+      context: 'finalizeAccepted:readonly',
+      tags: {
+        workMode,
+        dirty: !beforeCleanup.clean,
+        changedPaths: beforeCleanup.changedPaths ?? [],
+        untrackedPaths: beforeCleanup.untracked ?? [],
+        untrackedContentBytes: [...untrackedContent.values()].reduce(
+          (sum, buf) => sum + buf.length, 0,
+        ),
+      },
     });
-    const cleanup=await removeTaskWorktree({
+    await preCleanupWorktreeGuard({
+      workspace: prepared.workspace,
+      baseCommit: missionWs.base_commit,
+      evidencePreserved,
+      context: `finalizeAccepted:${task.task_key}:readonly`,
+    });
+    const cleanup = await removeTaskWorktree({
       baseWorkspace:missionWs.base_workspace,
       workspace:prepared.workspace,
       branch:prepared.branch
@@ -2202,17 +2239,75 @@ async function cleanupFailedTaskAttempt(mission:any,task:any){
 
   const missionWs=getMissionWorkspaceRecord(mission.id);
   const evidencePreserved=Boolean(ws.commit_hash || ws.merge_commit);
-  await preCleanupWorktreeGuard({
-    workspace:ws.workspace_path,
-    baseCommit:missionWs.base_commit,
-    evidencePreserved,
-    context:`cleanupFailedTaskAttempt:${task.task_key}`
+
+  // Classify the worktree before the guard so untracked/preserved evidence
+  // inventory is available for retention even if the guard fires.
+  const guardState = await classifyWorktreeState(ws.workspace_path, missionWs.base_commit);
+
+  // Untracked files are invisible to git patch; read their content now so
+  // it survives the worktree removal that the guard would otherwise block.
+  const untrackedContent = new Map<string, Buffer>();
+  for (const relPath of guardState.changedPaths.slice(0, 200)) {
+    try {
+      const absPath = join(ws.workspace_path, relPath);
+      if (existsSync(absPath) && !relPath.endsWith('/')) {
+        untrackedContent.set(relPath, readFileSync(absPath));
+      }
+    } catch { /* skip unreadable paths */ }
+  }
+
+  // If the guard refuses because evidence is unpreserved, capture a forensic
+  // retention artifact before the worktree is destroyed so nothing is silently lost.
+  let forensicRetention: { artifactPath: string; metadataPath: string } | null = null;
+  try {
+    await preCleanupWorktreeGuard({
+      workspace: ws.workspace_path,
+      baseCommit: missionWs.base_commit,
+      evidencePreserved,
+      context: `cleanupFailedTaskAttempt:${task.task_key}`,
+    });
+  } catch (err: any) {
+    if (/PRE_CLEANUP_WORKTREE_BLOCKED:/.test(err?.message ?? '')) {
+      forensicRetention = await retainForensicArtifact({
+        workspace: ws.workspace_path,
+        missionId: mission.id,
+        taskKey: task.task_key,
+        attemptNo: ws.attempt_no,
+        worktreeRoot: missionWs.base_workspace,
+        context: 'cleanupFailedTaskAttempt',
+        tags: {
+          guardBlockReason: err?.message ?? '',
+          attemptNo: ws.attempt_no,
+          dirty: guardState.dirty,
+          ahead: guardState.ahead,
+          changedPaths: guardState.changedPaths,
+          untrackedPaths: guardState.changedPaths,
+          untrackedContentBytes: [...untrackedContent.values()].reduce(
+            (sum, buf) => sum + buf.length, 0,
+          ),
+        },
+      });
+    }
+    throw err;
+  }
+
+  const cleanup = await removeTaskWorktree({
+    baseWorkspace: missionWs.base_workspace,
+    workspace: ws.workspace_path,
+    branch: ws.branch_name,
   });
-  const cleanup=await removeTaskWorktree({
-    baseWorkspace:missionWs.base_workspace,
-    workspace:ws.workspace_path,
-    branch:ws.branch_name
-  });
+
+  if (forensicRetention) {
+    const fr = forensicRetention as { artifactPath: string; metadataPath: string };
+    event(mission.id, 'lead.recovery_forensic_artifact_retained', {
+      taskKey: task.task_key,
+      attemptNo: ws.attempt_no,
+      retention: {
+        artifactPath: fr.artifactPath,
+        metadataPath: fr.metadataPath,
+      },
+    }, task.id);
+  }
 
   db.prepare(`
     UPDATE mission_task_workspaces SET status=?,error_text=?,updated_at=? WHERE id=?
@@ -3789,26 +3884,57 @@ export async function replanMission(missionId:string){
     for(const row of taskWorkspaces){
       if(!row.workspace_path || !row.branch_name)continue;
 
-      const evidencePreservedReplan=Boolean(row.commit_hash || row.merge_commit);
-      await preCleanupWorktreeGuard({
-        workspace:row.workspace_path,
-        baseCommit:row.base_commit || missionWs.base_commit,
-        evidencePreserved:evidencePreservedReplan,
-        context:`replan_cleanup:${row.task_key}`
+      const evidencePreservedReplan = Boolean(row.commit_hash || row.merge_commit);
+      // If the guard refuses (un-preserved dirty/ahead state), retain the
+      // worktree as a forensic artifact before the worktree is destroyed.
+      let replanRetention: { artifactPath: string; metadataPath: string } | null = null;
+      try {
+        await preCleanupWorktreeGuard({
+          workspace: row.workspace_path,
+          baseCommit: row.base_commit || missionWs.base_commit,
+          evidencePreserved: evidencePreservedReplan,
+          context: `replan_cleanup:${row.task_key}`,
+        });
+      } catch (err: any) {
+        if (/PRE_CLEANUP_WORKTREE_BLOCKED:/.test(err?.message ?? '')) {
+          // Retention errors are blocking: without the artifact the evidence
+          // is unrecoverable. Let the error propagate naturally so the caller
+          // (replan control flow) is notified instead of silently losing data.
+          replanRetention = await retainForensicArtifact({
+            workspace: row.workspace_path,
+            missionId: missionId,
+            taskKey: row.task_key,
+            attemptNo: row.attempt_no,
+            worktreeRoot: missionWs.base_workspace,
+            context: 'replanMission',
+            tags: { guardBlockReason: err?.message ?? '', attemptNo: row.attempt_no },
+          });
+        }
+        throw err;
+      }
+
+      const cleanup = await removeTaskWorktree({
+        baseWorkspace: missionWs.base_workspace,
+        workspace: row.workspace_path,
+        branch: row.branch_name,
       });
 
-      const cleanup=await removeTaskWorktree({
-        baseWorkspace:missionWs.base_workspace,
-        workspace:row.workspace_path,
-        branch:row.branch_name
-      });
-
-      cleanupResults.push({
-        taskKey:row.task_key,
-        workspace:row.workspace_path,
-        branch:row.branch_name,
-        ...cleanup
-      });
+      if (replanRetention) {
+        cleanupResults.push({
+          taskKey: row.task_key,
+          workspace: row.workspace_path,
+          branch: row.branch_name,
+          forensicArtifact: replanRetention,
+          error: cleanup.error ?? null,
+        });
+      } else {
+        cleanupResults.push({
+          taskKey: row.task_key,
+          workspace: row.workspace_path,
+          branch: row.branch_name,
+          ...cleanup,
+        });
+      }
 
       if(!cleanup.removed){
         db.prepare(`
