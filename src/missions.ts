@@ -27,7 +27,13 @@ import {
   retainForensicArtifact,
   buildForensicDiffBundle,
 } from './git/worktrees.js';
-import { preserveMissionTaskEventsForReplan } from './replan-history.js';
+import {
+  preserveMissionTaskEventsForReplan,
+  writeReplanSnapshot,
+  markWorktreePathCleaned,
+  removeReplanSnapshot,
+  REPLAN_SNAPSHOT_DIR_REL,
+} from './replan-history.js';
 import {
   finalGateRecoveryAttemptCount,
   missionRecoveryAttemptCount,
@@ -3810,6 +3816,66 @@ export async function planMission(missionId:string) {
   }
 }
 
+/**
+ * Scan for unrecovered replan snapshots on disk and restore those missions to
+ * a safe blocked state.  This covers the crash window where:
+ *   - replanMission started, wrote a snapshot and set __REPLAN_IN_PROGRESS__,
+ *   - then the process crashed before the DB transaction committed.
+ *
+ * On restart:
+ *   • If the DB still shows __REPLAN_IN_PROGRESS__ → crash was before commit;
+ *     clear marker (tasks still exist), block so human can assess worktree state.
+ *   • If the DB was reset to status='new' but the snapshot file is still
+ *     present → crash was between DB reset and planMission() completing;
+ *     block so mission is not silently re-planned.
+ */
+export function recoverInterruptedReplan(missionId: string): void {
+  const snapshotDir = join(cfg.worktreeRoot, REPLAN_SNAPSHOT_DIR_REL);
+  const snapshotPath = join(snapshotDir, `${missionId}.json`);
+  if (!existsSync(snapshotPath)) return;
+
+  const mission = missionRow(missionId);
+  if (!mission) {
+    // Mission no longer exists; clean up the orphaned snapshot.
+    removeReplanSnapshot(snapshotPath);
+    return;
+  }
+
+  const errorText = String(mission.error_text ?? '');
+  if (errorText !== '__REPLAN_IN_PROGRESS__' && mission.status === 'new') {
+    removeReplanSnapshot(snapshotPath);
+    db.prepare(
+      `UPDATE missions SET status='blocked', error_text=?, updated_at=? WHERE id=?`
+    ).run(
+      `RECOVERABLE_REPLAN_CRASH: snapshot retained at ${snapshotPath}`,
+      now(),
+      missionId
+    );
+    event(missionId, 'mission.replan_crash_recovered', {
+      reason: 'unrecovered_snapshot_after_reset',
+      previousStatus: mission.status,
+      snapshotPath,
+    });
+  } else if (errorText === '__REPLAN_IN_PROGRESS__') {
+    removeReplanSnapshot(snapshotPath);
+    db.prepare(
+      `UPDATE missions SET error_text=?, updated_at=? WHERE id=?`
+    ).run(
+      `RECOVERABLE_REPLAN_CRASH: snapshot written but DB transaction not committed`,
+      now(),
+      missionId
+    );
+    event(missionId, 'mission.replan_crash_recovered', {
+      reason: 'in_progress_marker_cleared',
+      previousStatus: mission.status,
+      snapshotPath,
+    });
+  }
+}
+
+
+
+
 
 export async function replanMission(missionId:string){
   const mission=missionRow(missionId);
@@ -3879,14 +3945,64 @@ export async function replanMission(missionId:string){
     ORDER BY mtw.created_at DESC
   `).all(missionId) as any[];
 
+  const snapshotDir = join(cfg.worktreeRoot, REPLAN_SNAPSHOT_DIR_REL);
+  let snapshotPath: string | null = null;
+
+  // ── Phase-2c: write crash-window snapshot BEFORE any destructive cleanup ──
+  // If the process dies mid-replan the snapshot preserves the original DAG
+  // state plus a per-worktree cleaned/uncleaned ledger so recovery can
+  // reconstruct exactly what state the mission was in before replan started.
+  try {
+    const integrationInfo = missionWs?.integration_workspace
+      ? await inspectGitWorkspace(missionWs.integration_workspace).catch(() => ({
+          head: null as string | null,
+          branch: null as string | null,
+        }))
+      : { head: null as string | null, branch: null as string | null };
+
+    snapshotPath = writeReplanSnapshot({
+      snapshotDir,
+      missionId,
+      missionStatus: mission.status,
+      missionErrorText: mission.error_text ?? null,
+      missionPlanJson: mission.plan_json ?? '{}',
+      tasks: taskWorkspaces.map((ws: any) => ({
+        id: ws.task_id,
+        taskKey: ws.task_key,
+        status: ws.status,
+        sequenceNo: 0,
+        executionId: null as string | null,
+        attemptNo: ws.attempt_no,
+      })),
+      gates: [] as Array<{ id: string; status: string }>,
+      worktreeInfos: taskWorkspaces.map((ws: any) => ({
+        workspacePath: ws.workspace_path,
+        branchName: ws.branch_name,
+        baseCommit: ws.base_commit ?? missionWs?.base_commit ?? null,
+        status: ws.status,
+        existsOnDisk: existsSync(ws.workspace_path || ''),
+      })),
+      integrationHead: integrationInfo.head,
+      integrationBranch: integrationInfo.branch,
+    });
+
+    db.prepare(`
+      UPDATE missions SET error_text=?, updated_at=? WHERE id=?
+    `).run('__REPLAN_IN_PROGRESS__', now(), missionId);
+  } catch (snapErr) {
+    // Snapshot write failure is non-fatal; the replan still proceeds. Crash
+    // recovery will be degraded for this mission.
+    event(missionId, 'mission.replan_snapshot_failed', {
+      error: String(snapErr),
+    });
+  }
+
   const cleanupResults:any[]=[];
   if(missionWs?.mode==='isolated'){
     for(const row of taskWorkspaces){
       if(!row.workspace_path || !row.branch_name)continue;
 
       const evidencePreservedReplan = Boolean(row.commit_hash || row.merge_commit);
-      // If the guard refuses (un-preserved dirty/ahead state), retain the
-      // worktree as a forensic artifact before the worktree is destroyed.
       let replanRetention: { artifactPath: string; metadataPath: string } | null = null;
       try {
         await preCleanupWorktreeGuard({
@@ -3897,9 +4013,6 @@ export async function replanMission(missionId:string){
         });
       } catch (err: any) {
         if (/PRE_CLEANUP_WORKTREE_BLOCKED:/.test(err?.message ?? '')) {
-          // Retention errors are blocking: without the artifact the evidence
-          // is unrecoverable. Let the error propagate naturally so the caller
-          // (replan control flow) is notified instead of silently losing data.
           replanRetention = await retainForensicArtifact({
             workspace: row.workspace_path,
             missionId: missionId,
@@ -3918,6 +4031,11 @@ export async function replanMission(missionId:string){
         workspace: row.workspace_path,
         branch: row.branch_name,
       });
+
+      // Advance the crash-window snapshot so recovery knows what was removed.
+      if (snapshotPath) {
+        markWorktreePathCleaned(snapshotPath, row.workspace_path);
+      }
 
       if (replanRetention) {
         cleanupResults.push({
@@ -3938,8 +4056,8 @@ export async function replanMission(missionId:string){
 
       if(!cleanup.removed){
         db.prepare(`
-          UPDATE missions
-          SET status='blocked',error_text='MISSION_REPLAN_WORKTREE_CLEANUP_FAILED',updated_at=?
+          UPDATE missions SET status='blocked',
+          error_text='MISSION_REPLAN_WORKTREE_CLEANUP_FAILED',updated_at=?
           WHERE id=?
         `).run(now(),missionId);
 
@@ -3988,9 +4106,22 @@ export async function replanMission(missionId:string){
     cleanedTaskWorktrees:cleanupResults
   });
 
-  return await planMission(missionId);
+  try {
+    const planResult = await planMission(missionId);
+    return planResult;
+  } finally {
+    // Always clear the replan-in-progress marker from the DB row so that a
+    // cleanly-completed replan does not appear to be mid-cleanup on restart.
+    // The snapshot was already removed in the try branch above on success;
+    // on failure we intentionally leave it as forensic evidence of what was
+    // removed when the crash occurred.
+    try {
+      db.prepare(
+        `UPDATE missions SET error_text=NULL, updated_at=? WHERE id=? AND error_text='__REPLAN_IN_PROGRESS__'`
+      ).run(now(), missionId);
+    } catch { /* ignore */ }
+  }
 }
-
 
 function exhaustedTargetEvidenceCanReset(missionId:string){
   const priorReset:any=db.prepare(`
@@ -4306,8 +4437,20 @@ export function resumeAutonomousMissions(){
     let blockedTaskRecoveryAllowed=false;
 
     const semanticReplanReasons=semanticPlanReplanReasons(missionId);
-    if(
-      semanticReplanReasons.length
+    // ── Phase-2c: recover any unrecovered replan snapshot before semantic replan ──
+    // If a previous replan crashed, the snapshot is still on disk and the DB
+    // either has __REPLAN_IN_PROGRESS__ or status='new' with no error.  We
+    // restore the mission to 'blocked' (with snapshot path in error_text) so
+    // it is not silently re-planned; a human can recover the worktree state.
+    recoverInterruptedReplan(missionId);
+    const missionAfterRecovery = missionRow(missionId);
+    const recoveryBlocked =
+      missionAfterRecovery != null &&
+      String(missionAfterRecovery.error_text ?? '').startsWith('RECOVERABLE_REPLAN_CRASH') &&
+      String(missionAfterRecovery.status) === 'blocked';
+    if (
+      !recoveryBlocked
+      && semanticReplanReasons.length
       && !missionHasIntegratedTaskChanges(missionId)
     ){
       const semanticReplanAttempts=autonomousPlanningReplanAttemptCount(missionId);
