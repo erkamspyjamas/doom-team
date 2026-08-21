@@ -1599,31 +1599,55 @@ async function finalizeAcceptedTaskWorkspace(
       context: `finalizeAccepted:${task.task_key}:readonly`,
     });
     const cleanup = await removeTaskWorktree({
-      baseWorkspace:missionWs.base_workspace,
-      workspace:prepared.workspace,
-      branch:prepared.branch
+      baseWorkspace: missionWs.base_workspace,
+      workspace: prepared.workspace,
+      branch: prepared.branch,
     });
+
+    const readonlySuccess = cleanup.status === 'cleaned' || cleanup.status === 'retained';
+    const readonlyResult: 'pass' | 'fail' = readonlySuccess ? 'pass' : 'fail';
+    const readonlyStatus = readonlySuccess
+      ? (cleanup.status === 'retained' ? 'retained' : 'cleaned_readonly')
+      : 'error';
+    const readonlyReason = readonlySuccess
+      ? null
+      : (
+        cleanup.status === 'refused'
+          ? (cleanup as { error?: string }).error
+          : (cleanup.status === 'human_required'
+            ? (cleanup as { error?: string }).error
+            : 'READONLY_WORKTREE_CLEANUP_FAILED')
+      );
 
     db.prepare(`
       UPDATE mission_task_workspaces
       SET commit_hash=NULL,merge_commit=NULL,status=?,diff_stat=?,error_text=?,updated_at=?
       WHERE task_id=? AND attempt_no=?
     `).run(
-      cleanup.removed?'cleaned_readonly':'error',
+      readonlyStatus,
       beforeCleanup.diffStat ?? '',
-      cleanup.removed?null:(cleanup.error ?? 'READONLY_WORKTREE_CLEANUP_FAILED'),
-      now(),task.id,attemptNo
+      readonlyReason,
+      now(), task.id, attemptNo,
     );
 
-    evidence(mission.id,task.id,null,'workspace_readonly_cleanup',cleanup.removed?'pass':'fail',{
-      workMode,
-      discardedWorkspaceChanges:!beforeCleanup.clean,
-      changedPaths:beforeCleanup.changedPaths ?? [],
-      cleanup
-    });
+    evidence(
+      mission.id,
+      task.id,
+      null,
+      'workspace_readonly_cleanup',
+      readonlyResult,
+      {
+        workMode,
+        discardedWorkspaceChanges: !beforeCleanup.clean,
+        changedPaths: beforeCleanup.changedPaths ?? [],
+        cleanup,
+      },
+    );
 
-    if(!cleanup.removed){
-      throw new Error(`READONLY_WORKTREE_CLEANUP_FAILED:${cleanup.error ?? 'unknown'}`);
+    if (!readonlySuccess) {
+      throw new Error(
+        `READONLY_WORKTREE_CLEANUP_FAILED:${readonlyReason ?? 'unknown'}`,
+      );
     }
 
     event(mission.id,'workspace.task_readonly_cleaned',{
@@ -1695,9 +1719,18 @@ async function finalizeAcceptedTaskWorkspace(
     workspace:prepared.workspace,
     branch:prepared.branch
   });
+  const integrationCleanStatus =
+    cleanup.status === 'refused' || cleanup.status === 'human_required'
+      ? 'error'
+      : 'merged';
   db.prepare(`
     UPDATE mission_task_workspaces SET status=?,updated_at=? WHERE task_id=? AND attempt_no=?
-  `).run(cleanup.removed?'cleaned':'merged',now(),task.id,attemptNo);
+  `).run(integrationCleanStatus, now(), task.id, attemptNo);
+  if (integrationCleanStatus === 'error') {
+    const cleanupError =
+      (cleanup as { provenance?: string; reason?: string }).reason ?? 'unknown';
+    throw new Error(`INTEGRATION_WORKTREE_CLEANUP_FAILED:${task.task_key}:${cleanupError}`);
+  }
   return merged;
 }
 
@@ -2315,23 +2348,32 @@ async function cleanupFailedTaskAttempt(mission:any,task:any){
     }, task.id);
   }
 
+  const recoverySuccess = cleanup.status === 'cleaned' || cleanup.status === 'retained';
+  const recoveryDbStatus: string = recoverySuccess
+    ? cleanup.status === 'retained'
+      ? 'recovery_retained'
+      : 'recovery_cleaned'
+    : 'error';
+  const recoveryReason: string | null = recoverySuccess
+    ? null
+    : (cleanup as { error?: string }).error ?? 'RECOVERY_WORKTREE_CLEANUP_FAILED';
+
   db.prepare(`
     UPDATE mission_task_workspaces SET status=?,error_text=?,updated_at=? WHERE id=?
-  `).run(
-    cleanup.removed?'recovery_cleaned':'error',
-    cleanup.removed?null:(cleanup.error ?? 'RECOVERY_WORKTREE_CLEANUP_FAILED'),
-    now(),ws.id
-  );
+  `).run(recoveryDbStatus, recoveryReason, now(), ws.id);
 
-  event(mission.id,'lead.recovery_workspace_cleaned',{
-    taskKey:task.task_key,
-    attemptNo:ws.attempt_no,
-    removed:cleanup.removed,
-    error:cleanup.error ?? null
-  },task.id);
+  event(mission.id, 'lead.recovery_workspace_cleaned', {
+    taskKey: task.task_key,
+    attemptNo: ws.attempt_no,
+    provenance: cleanup.status,
+    branchDeleted: (cleanup as { branchDeleted?: boolean }).branchDeleted ?? false,
+    error: recoveryReason,
+  }, task.id);
 
-  if(!cleanup.removed){
-    throw new Error(`RECOVERY_WORKTREE_CLEANUP_FAILED:${cleanup.error ?? 'unknown'}`);
+  if (!recoverySuccess) {
+    throw new Error(
+      `RECOVERY_WORKTREE_CLEANUP_FAILED:${task.task_key}:${recoveryReason}`,
+    );
   }
   return cleanup;
 }
@@ -4033,7 +4075,8 @@ export async function replanMission(missionId:string){
       });
 
       // Advance the crash-window snapshot so recovery knows what was removed.
-      if (snapshotPath) {
+      // Only mark as cleaned on true success or workspace already absent (nothing left on disk).
+      if (snapshotPath && (cleanup.status === 'cleaned' || cleanup.status === 'retained')) {
         markWorktreePathCleaned(snapshotPath, row.workspace_path);
       }
 
@@ -4043,7 +4086,10 @@ export async function replanMission(missionId:string){
           workspace: row.workspace_path,
           branch: row.branch_name,
           forensicArtifact: replanRetention,
-          error: cleanup.error ?? null,
+          error: cleanup.status === 'cleaned' || cleanup.status === 'retained'
+            ? null
+            : (cleanup as { error?: string }).error ?? 'unknown',
+          provenance: cleanup.status,
         });
       } else {
         cleanupResults.push({
@@ -4054,20 +4100,22 @@ export async function replanMission(missionId:string){
         });
       }
 
-      if(!cleanup.removed){
+      const replanSuccess = cleanup.status === 'cleaned' || cleanup.status === 'retained';
+      if (!replanSuccess) {
         db.prepare(`
           UPDATE missions SET status='blocked',
-          error_text='MISSION_REPLAN_WORKTREE_CLEANUP_FAILED',updated_at=?
+          error_text='MISSION_REPLAN_WORKTREE_CLEANUP_FAILED', updated_at=?
           WHERE id=?
-        `).run(now(),missionId);
+        `).run(now(), missionId);
 
-        event(missionId,'mission.replan_cleanup_failed',{
-          taskKey:row.task_key,
-          cleanup
+        event(missionId, 'mission.replan_cleanup_failed', {
+          taskKey: row.task_key,
+          provenance: cleanup.status,
+          error: (cleanup as { error?: string }).error ?? 'unknown',
         });
 
         throw new Error(
-          `MISSION_REPLAN_WORKTREE_CLEANUP_FAILED:${row.task_key}:${cleanup.error ?? 'unknown'}`
+          `MISSION_REPLAN_WORKTREE_CLEANUP_FAILED:${row.task_key}:${(cleanup as { error?: string }).error ?? 'unknown'}`,
         );
       }
     }

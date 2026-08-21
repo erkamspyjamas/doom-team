@@ -463,24 +463,127 @@ export async function buildForensicDiffBundle(
 }
 
 
-export async function removeTaskWorktree(input:{
-  baseWorkspace:string;
-  workspace:string;
-  branch:string;
-}){
-  if(existsSync(input.workspace)){
-    const result=await run('git',['worktree','remove','--force',input.workspace],input.baseWorkspace,60_000);
-    if(result.exitCode!==0){
-      // Keep the directory/branch for forensic inspection instead of silently deleting.
-      return {removed:false,error:(result.stderr||result.stdout).trim()};
-    }
+/** Provenance states for task-worktree cleanup. */
+type RemoveTaskWorktreeProvenanceStatus =
+  | 'cleaned'
+  | 'retained'
+  | 'refused'
+  | 'human_required';
+
+/**
+ * Result of removeTaskWorktree.
+ *
+ * Fields:
+ * - status            : explicit cleanup outcome (one of four provenance states)
+ * - error             : human-readable failure detail; set when status !== 'cleaned'
+ * - reason            : structured tag explaining the outcome when not 'cleaned'
+ * - branchDeleted     : whether `git branch -D` succeeded (always false for 'retained'/'refused')
+ * - branchDeleteError : stderr from `git branch -D` when it failed, or null
+ * - removed           : legacy boolean – true when workspace removal succeeded;
+ *                      retained (already absent) is NOT considered a removal success.
+ * - workspaceExisted  : true when the workspace directory existed on disk before the call
+ *
+ * Provenance states:
+ *   cleaned              – worktree directory removed AND branch deleted.
+ *   retained             – workspace directory was already absent; nothing was removed;
+ *                          branch not touched to avoid phantom-deletion.
+ *   refused              – `git worktree remove --force` failed; directory and branch
+ *                          are preserved for forensic inspection.
+ *   human_required       – worktree directory removed but `git branch -D` failed;
+ *                          manual branch cleanup may be needed.
+ */
+
+export type RemoveTaskWorktreeResult = {
+  status: RemoveTaskWorktreeProvenanceStatus;
+  error: string | null;
+  reason: string | null;
+  branchDeleted: boolean;
+  branchDeleteError: string | null;
+  removed: boolean;
+  workspaceExisted: boolean;
+};
+
+/** Input accepted by removeTaskWorktree. */
+export type RemoveTaskWorktreeInput = {
+  baseWorkspace: string;
+  workspace: string;
+  branch: string;
+};
+
+/**
+ * Remove a task worktree directory and its supporting branch, returning
+ * explicit lossless provenance per state.
+ *
+ *  cleaned – worktree removed + branch deleted (fully clean result)
+ *  retained – workspace was already absent; no deletion attempted (not an error)
+ *  refused – force-remove failed; directory + branch are kept (forensic safe fail-close)
+ *  human_required – worktree removed but branch delete failed; needs manual check
+ */
+
+export async function removeTaskWorktree(
+  input: RemoveTaskWorktreeInput,
+): Promise<RemoveTaskWorktreeResult> {
+  const workspaceExisted = existsSync(input.workspace);
+
+  // Path A: workspace never existed – nothing to remove, branch untouched.
+  if (!workspaceExisted) {
+    return {
+      status: 'retained',
+      error: null,
+      reason: 'workspace_already_absent',
+      branchDeleted: false,
+      branchDeleteError: null,
+      removed: false,
+      workspaceExisted: false,
+    };
   }
 
-  const del=await run('git',['branch','-D',input.branch],input.baseWorkspace,30_000);
+  // Path B: attempt to remove the on-disk worktree (untracked evidence is not deleted).
+  const removal = await run(
+    'git',
+    ['worktree', 'remove', '--force', input.workspace],
+    input.baseWorkspace,
+    60_000,
+  );
+  if (removal.exitCode !== 0) {
+    return {
+      status: 'refused',
+      error: (removal.stderr || removal.stdout).trim(),
+      reason: 'worktree_remove_failed',
+      branchDeleted: false,
+      branchDeleteError: null,
+      removed: false,
+      workspaceExisted: true,
+    };
+  }
+
+  // Path C: worktree removed; attempt to delete the supporting branch.
+  const branchDel = await run(
+    'git',
+    ['branch', '-D', input.branch],
+    input.baseWorkspace,
+    30_000,
+  );
+  if (branchDel.exitCode !== 0) {
+    return {
+      status: 'human_required',
+      error: (branchDel.stderr || branchDel.stdout).trim(),
+      reason: 'branch_delete_failed_after_worktree_removed',
+      branchDeleted: false,
+      branchDeleteError: null,
+      removed: true,
+      workspaceExisted: true,
+    };
+  }
+
   return {
-    removed:true,
-    branchDeleted:del.exitCode===0,
-    branchDeleteError:del.exitCode===0?null:(del.stderr||del.stdout).trim(),
+    status: 'cleaned',
+    error: null,
+    reason: null,
+    branchDeleted: true,
+    branchDeleteError: null,
+    removed: true,
+    workspaceExisted: true,
   };
 }
 
