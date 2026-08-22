@@ -89,7 +89,7 @@ const cfg=loadConfig();
 // Terminal outcomes are written at the final event of each attempt so the
 // ledger exposes terminal/non-terminal outcome as required by phase-3a.
 
-function ledgerInitFromAttemptStarted(input:{
+export function ledgerInitFromAttemptStarted(input:{
   missionId: string;
   kind: 'task' | 'final_gate' | 'planning';
   scopeTaskId: string | null;
@@ -99,6 +99,52 @@ function ledgerInitFromAttemptStarted(input:{
   scopeBudget: number;
   source: string;
 }): void {
+  // ── Phase-3c: refuse duplicate attempt when scope is already in-progress or already terminalized ──
+  //
+  // If the most recent attempt for this (kind, task_id) scope still has no
+  // terminal outcome, another recovery decision is in flight for this scope.
+  // Creating a second ledger entry for the same scope before the first is
+  // terminalized would corrupt per-scope budgeting and count tracking.
+  // Also refuse if there's already a terminal row in the current epoch (prevents
+  // restarting an already exhausted scope).
+  // Refuse here so callers cannot accidentally create duplicates.
+  try {
+    const epochEventId = recoveryEpochStartId(db, input.missionId);
+    const inProgressRow = db.prepare(`
+        SELECT attempt_no FROM recovery_attempts
+        WHERE mission_id=? AND kind=? AND scope_type=?
+          AND task_id IS ?
+          AND epoch_event_id = ?
+          AND terminal_outcome IS NULL
+        ORDER BY attempt_no DESC LIMIT 1
+      `).get(input.missionId, input.kind, input.kind, input.scopeTaskId, epochEventId);
+    if (inProgressRow) {
+      // Terminalize the in-progress row as failed (caller's error surfaced the
+      // duplicate attempt).  Do not create a second in-progress row.
+      const dupEvtId = lastEventId(db, input.missionId) ?? input.eventId;
+      ledgerTerminalize(
+        input.missionId, input.kind, input.scopeTaskId,
+        'failed',
+        dupEvtId,
+        'DUPLICATE_RECOVERY_ENTRY_REFUSED: scope already in-progress',
+      );
+      return;
+    }
+    // Also check for existing terminal row in the current epoch
+    const terminalRow = db.prepare(`
+        SELECT attempt_no FROM recovery_attempts
+        WHERE mission_id=? AND kind=? AND scope_type=?
+          AND task_id IS ?
+          AND epoch_event_id = ?
+          AND terminal_outcome IS NOT NULL
+        ORDER BY attempt_no DESC LIMIT 1
+      `).get(input.missionId, input.kind, input.kind, input.scopeTaskId, epochEventId);
+    if (terminalRow) {
+      // Scope already has a terminal outcome in this epoch — refuse new attempt
+      return;
+    }
+  } catch { /* non-fatal; fall through to INSERT */ }
+
   try {
     const epochEventId = recoveryEpochStartId(db, input.missionId);
     const stmt = db.prepare(`
@@ -133,7 +179,7 @@ function ledgerInitFromAttemptStarted(input:{
   }
 }
 
-function ledgerTerminalize(
+export function ledgerTerminalize(
   missionId: string,
   kind: 'task' | 'final_gate' | 'planning',
   scopeTaskId: string | null,
@@ -1895,15 +1941,18 @@ function recoveryEventCount(
 }
 
 
-function appliedTaskRecoveryCount(missionId:string,taskId:string){
-  return taskRecoveryAttemptCount(db,missionId,taskId);
+export function appliedTaskRecoveryCount(missionId:string,taskId?:string){
+  // Per-task count when taskId is provided; per-mission count otherwise.
+  // Pass null when no taskId to indicate per-mission count.
+  const tid = taskId || null;
+  return taskRecoveryAttemptCount(db, missionId, tid);
 }
 
-function appliedMissionRecoveryCount(missionId:string){
+export function appliedMissionRecoveryCount(missionId:string){
   return missionRecoveryAttemptCount(db,missionId);
 }
 
-function appliedFinalGateRecoveryCount(missionId:string){
+export function appliedFinalGateRecoveryCount(missionId:string){
   return finalGateRecoveryAttemptCount(db,missionId);
 }
 
@@ -1912,6 +1961,61 @@ function finalGateRecoveryBudgetExhausted(missionId:string){
     appliedMissionRecoveryCount(missionId)>=activeRecoveryPolicy.budgets.mission
     || appliedFinalGateRecoveryCount(missionId)>=activeRecoveryPolicy.budgets.finalGate
   );
+}
+
+/**
+ * isMissionTerminallyExhausted returns true when the mission carries an
+ * autonomous-recovery exhaustion marker and no subsequent epoch reset has
+ * removed it.  The marker is written by attemptAutonomousTaskRecovery and
+ * attemptAutonomousFinalGateRecovery when budgets are consumed.
+ *
+ * An explicit epoch reset (target_evidence_epoch_reset, action_first_epoch_reset,
+ * or recovery_budget_epoch_reset via override) clears the marker and returns
+ * false.
+ */
+export function isMissionTerminallyExhausted(mission:any):boolean{
+  if(!mission) return false;
+  const error=String(mission.error_text ?? '').trim();
+
+  // Only the two budget-exhaustion markers are terminal states. Other blocked
+  // states (escalation, planning failure) have their own bespoke paths.
+  const isExhaustionMarker=
+    error==='AUTONOMOUS_RECOVERY_EXHAUSTED'
+    || error.startsWith('FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED:');
+  if(!isExhaustionMarker) return false;
+
+  // A subsequent epoch-reset event supersedes the exhaustion marker.
+  const epochId=recoveryEpochStartId(db,mission.id);
+  const postEpoch:any=db.prepare(`
+    SELECT COUNT(*) c FROM mission_events
+    WHERE mission_id=? AND id>?
+      AND event_type IN (
+        'lead.recovery_budget_epoch_reset',
+        'lead.target_evidence_epoch_reset',
+        'lead.action_first_epoch_reset'
+      )
+  `).get(mission.id,epochId);
+  return Number(postEpoch?.c ?? 0)===0;
+}
+
+/**
+ * terminalExhaustionReason returns a human-readable description of why a
+ * mission is terminally exhausted, or null if it is not.
+ */
+export function terminalExhaustionReason(mission:any):string|null{
+  if(!mission) return null;
+  const error=String(mission.error_text ?? '').trim();
+  if(
+    isMissionTerminallyExhausted(mission)
+    && error.startsWith('FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED:')
+  ){
+    const gateType=error.split(':')[1] ?? 'unknown';
+    return `Final-gate recovery budget exhausted (${gateType}).`;
+  }
+  if(isMissionTerminallyExhausted(mission)){
+    return 'Autonomous recovery budget exhausted.';
+  }
+  return null;
 }
 
 function latestTaskGate(taskId:string){
@@ -4226,6 +4330,18 @@ export async function replanMission(missionId:string){
     throw new Error(`MISSION_NOT_REPLANNABLE:${mission.status}`);
   }
 
+  // ── Phase-3c: replan must not reset terminal exhaustion ─────────────────
+  //
+  // Autonomous budget exhaustion is a human-gated terminal state.  A replan
+  // that silently cleared the mission to 'new' and deleted the task DAG
+  // would consume no ledger budget but would effectively reset exhaustion,
+  // violating the safety boundary.
+  // An explicit overrideRecoveryEpoch() call is required first.
+  if(isMissionTerminallyExhausted(mission)){
+    const reason = terminalExhaustionReason(mission) ?? 'Terminal recovery exhaustion.';
+    throw new Error(`MISSION_TERMINALLY_EXHAUSTED:${reason}`);
+  }
+
   const taskStats:any=db.prepare(`
     SELECT
       COUNT(*) total,
@@ -5048,11 +5164,164 @@ export function resumeAutonomousMissions(){
   return {resumed,skipped,contractBackfill};
 }
 
+/**
+ * overrideRecoveryEpoch creates a new, auditable recovery epoch for a
+ * terminally exhausted mission.
+ *
+ * Behaviour:
+ *   1. Writes 'lead.recovery_budget_epoch_reset' with overridden:true and the
+ *      supplied authorizedBy/reason.  This event creates the new epoch
+ *      boundary: future recovery_attempts rows will carry this event id as
+ *      their epoch_event_id.
+ *   2. Terminalizes any in-progress (terminal_outcome IS NULL) recovery
+ *      ledger rows in the *previous* epoch as 'exhausted' with reason
+ *      'epoch_reset'.  Historical rows are not deleted or rewritten.
+ *   3. Clears AUTONOMOUS_RECOVERY_EXHAUSTED and
+ *      FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED* from mission.error_text so
+ *      resumeAutonomousMissions and other callers will attempt recovery
+ *      under the new budget once more.
+ *
+ * This function does NOT:
+ *   - Alter any existing terminal_outcome ('exhausted'|'refused'|'escalated')
+ *   - Bulk-reset historical attempt counts
+ *   - Grant recovery automatically; it only removes the terminal blocker
+ *
+ * The caller is responsible for ensuring authorizedBy identifies the
+ * authorizing principal.
+ */
+export function overrideRecoveryEpoch(input:{
+  missionId: string;
+  reason: string;
+  authorizedBy: string;
+}):{ missionId:string; eventId:number; previousError:string|null }{
+  // Override can only be applied when the mission shows an exhaustion marker.
+  const mission = missionRow(input.missionId);
+  if (!mission) throw new Error('MISSION_NOT_FOUND');
+
+  const isExhausted = isMissionTerminallyExhausted(mission);
+  const previousError = String(mission.error_text ?? '');
+
+  // If not terminally exhausted, record the override attempt but don't change error_text.
+  // This allows idempotent calls and operator-initiated resets on non-exhausted missions
+  // while preserving non-exhaustion error states.
+  if (!isExhausted) {
+    const t = now();
+    // Write a recovery_epoch_override event to record the attempt, but don't create
+    // a new epoch reset event or modify the mission error.
+    db.prepare(`
+      INSERT INTO mission_events
+        (mission_id, event_type, payload_json, created_at)
+      VALUES (?, 'lead.recovery_epoch_override', ?, ?)
+    `).run(
+      input.missionId,
+      JSON.stringify({
+        overridden: false,
+        authorizedBy: input.authorizedBy,
+        reason: input.reason,
+        previousError,
+        note: 'override attempted on non-exhausted mission; no epoch created',
+      }),
+      t
+    );
+    return { missionId: input.missionId, eventId: 0, previousError };
+  }
+
+  // Use an explicit transaction so the epoch boundary and ledger
+  // terminalization are atomic with respect to one another.
+  const t=now();
+  let resetEventId: number = 0;
+
+  db.transaction(()=>{
+    // 1. Write the epoch-reset event (creates new epoch boundary).
+    // Does NOT insert `id` — let AUTOINCREMENT assign it, then capture lastInsertRowid.
+    db.prepare(`
+      INSERT INTO mission_events
+        (mission_id,event_type,payload_json,created_at)
+      VALUES (?,'lead.recovery_budget_epoch_reset',?,?)
+    `).run(
+      input.missionId,
+      JSON.stringify({
+        overridden: true,
+        authorizedBy: input.authorizedBy,
+        reason: input.reason,
+        previousError,
+      }),
+      t
+    );
+    const _lastRow: any = db.prepare(`SELECT last_insert_rowid() AS lid`).get();
+    resetEventId = Number(_lastRow.lid ?? _lastRow.last_insert_rowid ?? 0);
+
+    // 2. Terminalize any in-progress ledger rows from the *prior* epoch so
+    //    they cannot consume the new budget.
+    const epochIdBefore=recoveryEpochStartId(db,input.missionId);
+    if(epochIdBefore && epochIdBefore < resetEventId){
+      db.prepare(`
+        UPDATE recovery_attempts
+        SET terminal_outcome = 'exhausted',
+            terminal_reason  = 'epoch_reset',
+            terminal_event_id = ?,
+            terminalized_at  = ?
+        WHERE mission_id = ?
+          AND epoch_event_id = ?
+          AND terminal_outcome IS NULL
+      `).run(resetEventId, t, input.missionId, epochIdBefore);
+    }
+
+    // 3. Clear the terminal exhaustion marker so the mission can be resumed.
+    const newError=
+      (previousError==='AUTONOMOUS_RECOVERY_EXHAUSTED'
+        || previousError.startsWith('FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED'))
+      ? null
+      : previousError;   // preserve non-exhaustion errors
+
+    db.prepare(`
+      UPDATE missions
+      SET error_text=?, updated_at=?
+      WHERE id=?
+    `).run(newError, t, input.missionId);
+
+    // 4. Preserve mission status (do NOT reset status to 'new' or 'active' so
+    //    that replanMission / runMission must still be called explicitly after
+    //    the override — never silently resume an exhausted mission).
+    //    The audit event in step 4 records the authorized override.
+
+    // 5. Audit event — clearly attributable and distinguishable from
+    //    a normal policy-driven epoch reset.
+    db.prepare(`
+      INSERT INTO mission_events
+        (mission_id, event_type, payload_json, created_at)
+      VALUES (?, 'lead.recovery_epoch_override', ?, ?)
+    `).run(
+      input.missionId,
+      JSON.stringify({
+        resetEventId,
+        authorizedBy: input.authorizedBy,
+        reason: input.reason,
+        previousError,
+      }),
+      t
+    );
+  })();
+
+  return { missionId: input.missionId, eventId: resetEventId, previousError };
+}
+
 export function runMission(missionId:string) {
   const mission=missionRow(missionId);
   if(!mission)throw new Error('MISSION_NOT_FOUND');
   if(!['ready','running','blocked','paused','validating','reviewing'].includes(mission.status)){
     throw new Error(`MISSION_NOT_RUNNABLE:${mission.status}`);
+  }
+
+  // ── Phase-3c: restart (runMission) must not open replacement execution ──
+  //
+  // Autonomous recovery exhaustion is a human-gated terminal state.
+  // Calling runMission() must not silently clear exhaustion and re-enter
+  // the mission loop.  Use overrideRecoveryEpoch() first if a fresh
+  // attempt is genuinely required.
+  if(isMissionTerminallyExhausted(mission)){
+    const reason=terminalExhaustionReason(mission) ?? 'Terminal recovery exhaustion.';
+    throw new Error(`MISSION_TERMINALLY_EXHAUSTED:${reason}`);
   }
 
   const failed=db.prepare(`SELECT COUNT(*) c FROM mission_tasks WHERE mission_id=? AND status='failed'`).get(missionId) as any;
@@ -5234,3 +5503,16 @@ export function missionEvents(missionId:string,limit=200) {
     ...x,payload:parseJson(x.payload_json,{})
   }));
 }
+
+// ─── Phase-3c re-exports for targeted testing ────────────────────────────────
+//
+// The following helpers are internal to the mission lifecycle module but
+// are exposed as lightweight exports so that targeted tests and diagnostics
+// can exercise them without duplicating ledger logic.
+
+export {
+  recoveryEpochStartId,
+  taskRecoveryAttemptCount,
+  missionRecoveryAttemptCount,
+  finalGateRecoveryAttemptCount,
+} from './recovery-budget.js';

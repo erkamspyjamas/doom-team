@@ -29,10 +29,21 @@ function hasRecoveryAttemptsTable(database:SqliteCountDatabase):boolean{
 export function taskRecoveryAttemptCount(
   database:SqliteCountDatabase,
   missionId:string,
-  taskId:string,
+  taskId:string | null | undefined,
 ){
   if(!hasRecoveryAttemptsTable(database)){
-    return legacyTaskRecoveryAttemptCount(database,missionId,taskId);
+    if (taskId) {
+      return legacyTaskRecoveryAttemptCount(database,missionId,taskId);
+    } else {
+      // Per-mission count for legacy
+      return legacyMissionRecoveryAttemptCount(database,missionId);
+    }
+  }
+  if (!taskId) {
+    return count(database,`
+      SELECT COUNT(*) c FROM recovery_attempts
+      WHERE mission_id=? AND kind='task'
+    `,missionId);
   }
   return count(database,`
     SELECT COUNT(*) c FROM recovery_attempts
@@ -87,7 +98,7 @@ function legacyTaskRecoveryAttemptCount(
 ){
   const epochId=recoveryEpochStartId(database,missionId);
   const firstNew=legacyFirstAttemptMarkerId(database,missionId,epochId,taskId);
-  const legacyUpperBound=firstNew ?? Number.MAX_SAFE_INTEGER;
+  const legacyUpperBound=firstNew ?? 9007199254740991; // Number.MAX_SAFE_INTEGER
   const legacy=count(database,`
     SELECT COUNT(*) c FROM mission_events
     WHERE mission_id=? AND task_id=? AND id>? AND id<?
@@ -107,7 +118,7 @@ function legacyFinalGateRecoveryAttemptCount(
 ){
   const epochId=recoveryEpochStartId(database,missionId);
   const firstNew=legacyFirstAttemptMarkerId(database,missionId,epochId,null);
-  const legacyUpperBound=firstNew ?? Number.MAX_SAFE_INTEGER;
+  const legacyUpperBound=firstNew ?? 9007199254740991; // Number.MAX_SAFE_INTEGER
   const legacy=count(database,`
     SELECT COUNT(*) c FROM mission_events
     WHERE mission_id=? AND id>? AND id<?
@@ -128,7 +139,7 @@ function legacyMissionRecoveryAttemptCount(
 ){
   const epochId=recoveryEpochStartId(database,missionId);
   const firstNew=legacyFirstAttemptMarkerId(database,missionId,epochId,undefined);
-  const legacyUpperBound=firstNew ?? Number.MAX_SAFE_INTEGER;
+  const legacyUpperBound=firstNew ?? 9007199254740991; // Number.MAX_SAFE_INTEGER
   const legacy=count(database,`
     SELECT COUNT(*) c FROM mission_events
     WHERE mission_id=? AND id>? AND id<?
