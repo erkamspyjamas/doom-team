@@ -1,4 +1,5 @@
 import { db, id, now, parseJson } from './db/index.js';
+import type { Database } from 'better-sqlite3';
 import { startExecution, getExecution, executionEvents, cancelExecution } from './executions.js';
 import { resolveToolDefinitions } from './tools/catalog.js';
 import { loadConfig } from './config.js';
@@ -41,6 +42,10 @@ import {
   taskRecoveryAttemptCount,
 } from './recovery-budget.js';
 import {
+  type RecoveryLedgerFilter,
+  listRecoveryAttemptsEnriched,
+} from './recovery-attempts.js';
+import {
   decideInterruptedTaskExecution,
   decideStartupRecovery,
   hasUnusedTaskRecoveryBudget,
@@ -56,6 +61,130 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const cfg=loadConfig();
+
+// ─── Recovery attempt ledger helpers (phase-3a) ──────────────────────────
+//
+// These functions maintain a durable, provenance-aware recovery_attempts
+// ledger alongside the existing mission_events stream.  The ledger is the
+// authoritative source for per-(kind,scope) attempt counts; the event stream
+// is the forensic audit log of every atomic transition.
+//
+// Terminal outcomes are written at the final event of each attempt so the
+// ledger exposes terminal/non-terminal outcome as required by phase-3a.
+
+function ledgerInitFromAttemptStarted(input:{
+  missionId: string;
+  kind: 'task' | 'final_gate' | 'planning';
+  scopeTaskId: string | null;
+  payload: Record<string, any>;
+  eventId: number;
+  missionBudget: number;
+  scopeBudget: number;
+  source: string;
+}): void {
+  try {
+    const epochEventId = recoveryEpochStartId(db, input.missionId);
+    const stmt = db.prepare(`
+      INSERT INTO recovery_attempts
+        (mission_id, task_id, kind, scope_type,
+         epoch_event_id, source_event_id,
+         attempt_no, mission_budget, scope_budget,
+         source, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(mission_id, kind, scope_type, task_id, attempt_no) DO UPDATE SET
+        source       = excluded.source,
+        source_event_id = excluded.source_event_id,
+        mission_budget = excluded.mission_budget,
+        scope_budget   = excluded.scope_budget
+    `);
+    stmt.run(
+      input.missionId,
+      input.scopeTaskId,
+      input.kind,
+      input.kind,
+      epochEventId,
+      input.eventId,
+      countRetryAttempts(db, input.missionId, input.kind, input.scopeTaskId) + 1,
+      input.missionBudget,
+      input.scopeBudget,
+      input.source,
+      String(input.payload.reason ?? ''),
+      now(),
+    );
+  } catch {
+    // Ledger is auxiliary; never block recovery flow on ledger write failure.
+  }
+}
+
+function ledgerTerminalize(
+  missionId: string,
+  kind: 'task' | 'final_gate' | 'planning',
+  scopeTaskId: string | null,
+  terminalOutcome: 'applied' | 'failed' | 'exhausted' | 'refused' | 'escalated',
+  terminalEventId: number,
+  terminalReason: string,
+  attemptNo?: number,
+): void {
+  try {
+    if (attemptNo == null || attemptNo <= 0) {
+      // Resolve the in-progress (no terminal_outcome) attempt for this scope.
+      const row = db.prepare(`
+          SELECT attempt_no FROM recovery_attempts
+          WHERE mission_id=? AND kind=? AND scope_type=?
+            AND task_id IS ?
+            AND terminal_outcome IS NULL
+          ORDER BY attempt_no DESC LIMIT 1
+        `)
+        .get(missionId, kind, kind, scopeTaskId) as
+          { attempt_no: number } | undefined;
+      if (!row) return;
+      attemptNo = row.attempt_no;
+    }
+    db.prepare(`
+      UPDATE recovery_attempts
+      SET terminal_outcome = ?,
+          terminal_reason  = ?,
+          terminal_event_id = ?,
+          terminalized_at  = ?
+      WHERE mission_id = ? AND kind = ? AND scope_type = ? AND task_id IS ?
+        AND attempt_no = ? AND terminal_outcome IS NULL
+    `).run(
+      terminalOutcome,
+      terminalReason,
+      terminalEventId,
+      now(),
+      missionId, kind, kind, scopeTaskId, attemptNo,
+    );
+  } catch {
+    // Non-fatal; mission_events remains the forensic authority.
+  }
+}
+
+function countRetryAttempts(
+  dbLike: Database,
+  missionId: string,
+  kind: string,
+  taskId: string | null,
+): number {
+  const row = dbLike
+    .prepare(`
+      SELECT COALESCE(MAX(attempt_no), 0) AS max_no
+      FROM recovery_attempts
+      WHERE mission_id = ? AND kind = ? AND scope_type = ? AND task_id IS ?
+    `)
+    .get(missionId, kind, kind, taskId) as { max_no: number } | undefined;
+  return Number(row?.max_no ?? 0);
+}
+
+/** Return the id of the most recently written event for a mission, or null if none. */
+function lastEventId(dbLike: Database, missionId: string): number | null {
+  const row = dbLike
+    .prepare(`
+      SELECT MAX(id) AS max_id FROM mission_events WHERE mission_id = ?
+    `)
+    .get(missionId) as { max_id: number | null } | undefined;
+  return row?.max_id ?? null;
+}
 
 type PlanTask = {
   key:string;
@@ -2555,7 +2684,16 @@ function applyRecoveryAction(
     event(mission.id,'lead.recovery_escalated',{
       reason,bossQuestion:String(action?.bossQuestion ?? '')
     },failedTask?.id ?? null);
-    return {recovered:false,escalated:true,action:type,reason};
+const escalatedEvtId = lastEventId(db, mission.id);
+ledgerTerminalize(
+mission.id,
+'task',
+failedTask?.id ?? null,
+'escalated',
+escalatedEvtId ?? 0,
+reason,
+);
+     return {recovered:false,escalated:true,action:type,reason};
   }
 
   if(type==='retry_gate'){
@@ -2563,7 +2701,13 @@ function applyRecoveryAction(
     db.prepare(`UPDATE missions SET status='running',error_text=NULL,updated_at=? WHERE id=?`)
       .run(now(),mission.id);
     event(mission.id,'lead.recovery_applied',{action:type,reason});
-    return {recovered:true,action:type,reason};
+const appliedRetryGateEvtId = lastEventId(db, mission.id);
+ledgerTerminalize(
+mission.id, 'final_gate', null, 'applied',
+appliedRetryGateEvtId ?? 0,
+reason,
+);
+     return {recovered:true,action:type,reason};
   }
 
   if(type==='add_remediation_task'){
@@ -2642,7 +2786,13 @@ function applyRecoveryAction(
       action:type,reason,taskId,taskKey:key,assignedAgentId,
       dependencies:dependencyTasks.map((t:any)=>t.task_key)
     },taskId);
-    return {recovered:true,action:type,reason};
+const remediationCreatedEvtId = lastEventId(db, mission.id);
+ledgerTerminalize(
+mission.id, 'final_gate', taskId, 'applied',
+remediationCreatedEvtId ?? 0,
+`add_remediation_task:${key}:${String(reason).slice(0, 200)}`,
+);
+     return {recovered:true,action:type,reason};
   }
 
   if(!failedTask)throw new Error(`RECOVERY_ACTION_REQUIRES_TASK:${type}`);
@@ -2653,22 +2803,28 @@ function applyRecoveryAction(
   if(type==='retry_task'){
     applyRecoveryTaskReset(mission,failedTask,String(action?.guidance ?? reason),type);
     event(mission.id,'lead.recovery_applied',{action:type,reason,taskKey:failedTask.task_key},failedTask.id);
-    return {recovered:true,action:type,reason};
-  }
+    const retryAppliedEvtId = lastEventId(db, mission.id);
+        ledgerTerminalize(
+      mission.id, 'task', failedTask.id, 'applied',
+      retryAppliedEvtId ?? 0,
+      `retry_task:${String(action?.guidance ?? reason).slice(0, 200)}`,
+      );
+      return {recovered:true,action:type,reason};
+      }
 
-  if(type==='reassign_task'){
-    const agentId=String(action?.assignedAgentId ?? '');
-    assertRecoveryAgentActive(mission,agentId);
-    validateRecoveryPlanObligations(mission,failedTask.id,{assignedAgentId:agentId});
-    db.prepare(`
+      if(type==='reassign_task'){
+      const agentId=String(action?.assignedAgentId ?? '');
+      assertRecoveryAgentActive(mission,agentId);
+      validateRecoveryPlanObligations(mission,failedTask.id,{assignedAgentId:agentId});
+      db.prepare(`
       UPDATE mission_tasks
       SET assigned_agent_id=?,status='pending',execution_id=NULL,result_text=NULL,error_text=NULL,
-          started_at=NULL,ended_at=NULL,updated_at=? WHERE id=?
-    `).run(agentId,now(),failedTask.id);
-    db.prepare(`UPDATE missions SET status='running',error_text=NULL,updated_at=? WHERE id=?`)
+      started_at=NULL,ended_at=NULL,updated_at=? WHERE id=?
+      `).run(agentId,now(),failedTask.id);
+      db.prepare(`UPDATE missions SET status='running',error_text=NULL,updated_at=? WHERE id=?`)
       .run(now(),mission.id);
-    refreshMissionPlanSnapshot(mission.id);
-    publishMessage({
+      refreshMissionPlanSnapshot(mission.id);
+      publishMessage({
       missionId:mission.id,taskId:failedTask.id,senderType:'lead',senderAgentId:mission.lead_agent_id,
       recipientType:'task',recipientId:failedTask.id,messageType:'directive',priority:'high',
       content:`Lead reassigned this task during autonomous recovery.\nReason: ${reason}`,
@@ -2678,29 +2834,35 @@ function applyRecoveryAction(
       action:type,reason,taskKey:failedTask.task_key,
       fromAgentId:failedTask.assigned_agent_id,toAgentId:agentId
     },failedTask.id);
-    return {recovered:true,action:type,reason};
-  }
+const reassignAppliedEvtId = lastEventId(db, mission.id);
+    ledgerTerminalize(
+      mission.id, 'task', failedTask.id, 'applied',
+      reassignAppliedEvtId ?? 0,
+      `reassign_task:${agentId}:${String(reason).slice(0, 200)}`,
+      );
+      return {recovered:true,action:type,reason};
+      }
 
-  if(type==='revise_task'){
-    const patch=action.patch ?? {};
-    const title=String(patch.title ?? failedTask.title).trim();
-    const currentMode=resolvedTaskWorkMode(mission,failedTask);
-    const currentInstruction=synthesizedTaskInstruction(mission,failedTask,currentMode);
-    const instruction=String(patch.instruction ?? patch.description ?? currentInstruction).trim();
-    const expectedOutcome=String(patch.expectedOutcome ?? taskExpectedOutcome(mission,failedTask)).trim();
-    const requestedMode=String(patch.workMode ?? currentMode).trim();
-    const workMode=(['modify','validate','analysis','general'].includes(requestedMode)
+      if(type==='revise_task'){
+      const patch=action.patch ?? {};
+      const title=String(patch.title ?? failedTask.title).trim();
+      const currentMode=resolvedTaskWorkMode(mission,failedTask);
+      const currentInstruction=synthesizedTaskInstruction(mission,failedTask,currentMode);
+      const instruction=String(patch.instruction ?? patch.description ?? currentInstruction).trim();
+      const expectedOutcome=String(patch.expectedOutcome ?? taskExpectedOutcome(mission,failedTask)).trim();
+      const requestedMode=String(patch.workMode ?? currentMode).trim();
+      const workMode=(['modify','validate','analysis','general'].includes(requestedMode)
       ? requestedMode
       : inferWorkModeFromPlanText({title,instruction,expectedOutcome})) as PlanTask['workMode'];
-    const description=instruction;
-    const acceptanceCriteria=Array.isArray(patch.acceptanceCriteria)
+      const description=instruction;
+      const acceptanceCriteria=Array.isArray(patch.acceptanceCriteria)
       ? patch.acceptanceCriteria.map((x:any)=>String(x).trim()).filter(Boolean).slice(0,12)
       : parseJson<string[]>(failedTask.acceptance_criteria_json,[]);
-    const agentId=String(patch.assignedAgentId ?? failedTask.assigned_agent_id);
-    if(!title || !instruction || !expectedOutcome)throw new Error('RECOVERY_TASK_PATCH_INVALID');
-    assertRecoveryAgentActive(mission,agentId);
+      const agentId=String(patch.assignedAgentId ?? failedTask.assigned_agent_id);
+      if(!title || !instruction || !expectedOutcome)throw new Error('RECOVERY_TASK_PATCH_INVALID');
+      assertRecoveryAgentActive(mission,agentId);
 
-    const hard=validatePlanAgainstBossConstraints(mission.objective,{
+      const hard=validatePlanAgainstBossConstraints(mission.objective,{
       tasks:[{key:failedTask.task_key,title,instruction,expectedOutcome,workMode,description,acceptanceCriteria}]
     });
     if(!hard.ok){
@@ -2754,7 +2916,13 @@ function applyRecoveryAction(
       action:type,reason,taskKey:failedTask.task_key,title,instruction,expectedOutcome,workMode,acceptanceCriteria,
       assignedAgentId:agentId,dependencies:depIds
     },failedTask.id);
-    return {recovered:true,action:type,reason};
+const revisedEvtId = lastEventId(db, mission.id);
+ledgerTerminalize(
+mission.id, 'task', failedTask.id, 'applied',
+revisedEvtId ?? 0,
+`revise_task:${String(reason).slice(0, 200)}`,
+);
+     return {recovered:true,action:type,reason};
   }
 
   throw new Error(`RECOVERY_ACTION_UNSUPPORTED:${type}`);
@@ -2871,16 +3039,50 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
       reason:'RECOVERY_REFUSED_INTEGRATED_TASK',
       message:'Latest worktree already integrated; recovery would duplicate or destroy published progress.'
     },failedTask.id);
+    const refusedEvtId = lastEventId(db, mission.id);
+    ledgerInitFromAttemptStarted({
+        missionId: mission.id,
+        kind: 'task',
+        scopeTaskId: failedTask.id,
+        payload: { reason: 'RECOVERY_REFUSED_INTEGRATED_TASK' },
+        eventId: refusedEvtId ?? 0,
+        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        source: 'lead.recovery_integrated_task_refused',
+    });
+    ledgerTerminalize(
+        mission.id, 'task', failedTask.id, 'refused',
+        refusedEvtId ?? 0,
+        'RECOVERY_REFUSED_INTEGRATED_TASK',
+        undefined,  // attempt number resolved by ledgerTerminalize from existing records
+    );
     return {recovered:false,reason:'RECOVERY_REFUSED_INTEGRATED_TASK'};
-  }
+      }
 
-  const missionAttempts=appliedMissionRecoveryCount(mission.id);
-  const taskAttempts=appliedTaskRecoveryCount(mission.id,failedTask.id);
-  if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || taskAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_TASK){
-    event(mission.id,'lead.recovery_budget_exhausted',{
+      const missionAttempts=appliedMissionRecoveryCount(mission.id);
+      const taskAttempts=appliedTaskRecoveryCount(mission.id,failedTask.id);
+      if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || taskAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_TASK){
+      event(mission.id,'lead.recovery_budget_exhausted',{
       missionAttempts,taskAttempts,taskKey:failedTask.task_key
-    },failedTask.id);
-    return {recovered:false,reason:'RECOVERY_BUDGET_EXHAUSTED'};
+      },failedTask.id);
+      const budgetExhaustedEvtId = lastEventId(db, mission.id);
+      ledgerInitFromAttemptStarted({
+      missionId: mission.id,
+      kind: 'task',
+      scopeTaskId: failedTask.id,
+      payload: { missionAttempts, taskAttempts, taskKey: failedTask.task_key },
+      eventId: budgetExhaustedEvtId ?? 0,
+      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+      source: 'lead.recovery_budget_exhausted',
+    });
+ledgerTerminalize(
+mission.id, 'task', failedTask.id, 'exhausted',
+budgetExhaustedEvtId ?? 0,
+'RECOVERY_BUDGET_EXHAUSTED',
+taskAttempts + 1,
+);
+     return {recovered:false,reason:'RECOVERY_BUDGET_EXHAUSTED'};
   }
 
   event(mission.id,'lead.recovery_attempt_started',{
@@ -2891,6 +3093,24 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
     scopeAttempt:taskAttempts+1,
     scopeBudget:MAX_AUTONOMOUS_RECOVERY_PER_TASK,
   },failedTask.id);
+      const taskAttemptEvtId = lastEventId(db, mission.id);
+        ledgerInitFromAttemptStarted({
+        missionId: mission.id,
+        kind: 'task',
+        scopeTaskId: failedTask.id,
+        payload: {
+        kind: 'task',
+        taskKey: failedTask.task_key,
+        missionAttempt: missionAttempts + 1,
+        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+        scopeAttempt: taskAttempts + 1,
+        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        },
+        eventId: taskAttemptEvtId ?? 0,
+        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        source: 'lead.recovery_attempt_started',
+      });
 
   try{
     await cleanupFailedTaskAttempt(mission,failedTask);
@@ -3000,28 +3220,69 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
     event(mission.id,'lead.recovery_failed',{
       error:String(err?.message ?? err),taskKey:failedTask.task_key
     },failedTask.id);
-    return {recovered:false,reason:String(err?.message ?? err)};
-  }
-}
+        const taskFailedEvtId = lastEventId(db, mission.id);
+          ledgerTerminalize(
+          mission.id, 'task', failedTask.id, 'failed',
+          taskFailedEvtId ?? 0,
+          String(err?.message ?? err).slice(0, 200),
+          );
+          return {recovered:false,reason:String(err?.message ?? err)};
+          }
+          }
 
-async function attemptAutonomousFinalGateRecovery(
-  mission:any,gateType:'qa'|'reviewer',gateResult:any
-):Promise<RecoveryResult>{
-  const missionAttempts=appliedMissionRecoveryCount(mission.id);
-  const finalAttempts=appliedFinalGateRecoveryCount(mission.id);
-  if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || finalAttempts>=MAX_AUTONOMOUS_FINAL_GATE_RECOVERY){
-    event(mission.id,'lead.recovery_budget_exhausted',{missionAttempts,finalAttempts,gateType});
-    return {recovered:false,reason:'FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED'};
-  }
+          async function attemptAutonomousFinalGateRecovery(
+          mission:any,gateType:'qa'|'reviewer',gateResult:any
+          ):Promise<RecoveryResult>{
+          const missionAttempts=appliedMissionRecoveryCount(mission.id);
+          const finalAttempts=appliedFinalGateRecoveryCount(mission.id);
+          if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || finalAttempts>=MAX_AUTONOMOUS_FINAL_GATE_RECOVERY){
+          event(mission.id,'lead.recovery_budget_exhausted',{missionAttempts,finalAttempts,gateType});
+          const finalBudgetExhaustedEvtId = lastEventId(db, mission.id);
+          ledgerInitFromAttemptStarted({
+          missionId: mission.id,
+          kind: 'final_gate',
+          scopeTaskId: null,
+          payload: { missionAttempts, finalAttempts, gateType },
+          eventId: finalBudgetExhaustedEvtId ?? 0,
+          missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+          scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+          source: 'lead.recovery_budget_exhausted',
+        });
+        ledgerTerminalize(
+      mission.id, 'final_gate', null, 'exhausted',
+      finalBudgetExhaustedEvtId ?? 0,
+      'FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED',
+      finalAttempts + 1,
+      );
+      return {recovered:false,reason:'FINAL_GATE_RECOVERY_BUDGET_EXHAUSTED'};
+      }
 
-  event(mission.id,'lead.recovery_attempt_started',{
-    kind:'final_gate',
-    gateType,
-    missionAttempt:missionAttempts+1,
-    missionBudget:MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-    scopeAttempt:finalAttempts+1,
-    scopeBudget:MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
-  });
+      event(mission.id,'lead.recovery_attempt_started',{
+      kind:'final_gate',
+      gateType,
+      missionAttempt:missionAttempts+1,
+      missionBudget:MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      scopeAttempt:finalAttempts+1,
+      scopeBudget:MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+    });
+  const finalAttemptEvtId = lastEventId(db, mission.id);
+      ledgerInitFromAttemptStarted({
+      missionId: mission.id,
+      kind: 'final_gate',
+      scopeTaskId: null,
+      payload: {
+      kind: 'final_gate',
+      gateType,
+      missionAttempt: missionAttempts + 1,
+      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      scopeAttempt: finalAttempts + 1,
+      scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+      },
+      eventId: finalAttemptEvtId ?? 0,
+      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+      source: 'lead.recovery_attempt_started',
+    });
   event(mission.id,'lead.final_gate_recovery_started',{gateType,gateId:gateResult.gateId});
   try{
     const failureContext={
@@ -3078,9 +3339,33 @@ async function attemptAutonomousFinalGateRecovery(
       }
     }
 
-    return applyRecoveryAction(mission,action,null,'final_gate');
+    const finalRecovery = applyRecoveryAction(mission,action,null,'final_gate') as {recovered:boolean; escalated?:boolean; action?:string; reason?:string};
+    try {
+      // applyRecoveryAction writes 'recovery_escalated' internally for task AND
+      // final_gate flows; always terminalize so the ledger captures the outcome.
+      const fgTermEvtId2 = lastEventId(db, mission.id);
+      const fgOutcome: 'applied' | 'escalated' | 'failed' | null =
+        finalRecovery.escalated ? 'escalated' : (
+          finalRecovery.recovered ? 'applied' : null
+        );
+      if (fgOutcome !== null) {
+        ledgerTerminalize(
+          mission.id, 'final_gate', null,
+          fgOutcome,
+          fgTermEvtId2 ?? 0,
+          String(finalRecovery.reason ?? '').slice(0, 200),
+        );
+      }
+    } catch { /* non-fatal */ }
+    return finalRecovery;;
   }catch(err:any){
     event(mission.id,'lead.recovery_failed',{error:String(err?.message ?? err),gateType});
+    const gateFailedEvtId = lastEventId(db, mission.id);
+    ledgerTerminalize(
+      mission.id, 'final_gate', null, 'failed',
+      gateFailedEvtId ?? 0,
+      String(err?.message ?? err).slice(0, 200),
+    );
     return {recovered:false,reason:String(err?.message ?? err)};
   }
 }
@@ -4572,6 +4857,23 @@ export function resumeAutonomousMissions(){
           event(missionId,'lead.recovery_budget_epoch_reset',{
             reason:resetReason
           });
+          // Epoch reset: terminalize any in-progress attempts in the ledger
+          // whose epoch_event_id predates the new epoch marker so they do
+          // not continue consuming the new budget.  New attempts will record
+          // with the reset's event_id as their epoch marker.
+          try {
+            const epochEvtId = recoveryEpochStartId(db, missionId);
+            db.prepare(`
+              UPDATE recovery_attempts
+              SET terminal_outcome = 'exhausted',
+                  terminal_reason  = 'epoch_reset',
+                  terminal_event_id = ?,
+                  terminalized_at  = ?
+              WHERE mission_id = ?
+                AND epoch_event_id < ?
+                AND terminal_outcome IS NULL
+            `).run(epochEvtId, now(), missionId, epochEvtId);
+          } catch { /* non-fatal */ }
         }
 
         db.prepare(`

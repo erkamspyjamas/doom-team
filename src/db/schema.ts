@@ -324,7 +324,31 @@ CREATE TABLE IF NOT EXISTS mission_events (
 CREATE INDEX IF NOT EXISTS idx_mission_events_mission
 ON mission_events(mission_id, id);
 
+CREATE TABLE IF NOT EXISTS recovery_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES mission_tasks(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('task','final_gate','planning')),
+  scope_type TEXT NOT NULL DEFAULT 'task'
+    CHECK (scope_type IN ('task','final_gate','planning','mission')),
+  epoch_event_id INTEGER NOT NULL
+    REFERENCES mission_events(id) ON DELETE RESTRICT,
+  source_event_id INTEGER REFERENCES mission_events(id) ON DELETE SET NULL,
+  attempt_no INTEGER NOT NULL,
+  mission_budget INTEGER NOT NULL,
+  scope_budget INTEGER NOT NULL,
+  source TEXT,
+  reason TEXT,
+  terminal_outcome TEXT CHECK (terminal_outcome IN ('applied','failed','exhausted','refused','escalated',null)),
+  terminal_reason TEXT,
+  terminal_event_id INTEGER REFERENCES mission_events(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  terminalized_at TEXT,
+  UNIQUE(mission_id, kind, scope_type, task_id, attempt_no)
+);
 
+CREATE INDEX IF NOT EXISTS idx_recovery_attempts_mission
+ON recovery_attempts(mission_id, kind, scope_type, id DESC);
 
 CREATE TABLE IF NOT EXISTS agent_factory_requests (
   id TEXT PRIMARY KEY,
