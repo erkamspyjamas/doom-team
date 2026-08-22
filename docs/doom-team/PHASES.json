@@ -204,6 +204,166 @@
         "qa": "human-doom-phase2d-cleanup-provenance-qa-v1",
         "reviewer": "human-doom-phase2d-cleanup-provenance-reviewer-v1"
       }
+    },
+    {
+      "id": "phase-3a",
+      "title": "Unified Attempt Ledger",
+      "brief": "docs/doom-team/tasks/phase-3a-unified-attempt-ledger.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase3a-unified-attempt-ledger-dev-v1",
+        "qa": "human-doom-phase3a-unified-attempt-ledger-qa-v1",
+        "reviewer": "human-doom-phase3a-unified-attempt-ledger-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-3b",
+      "title": "Versioned Recovery Policy",
+      "brief": "docs/doom-team/tasks/phase-3b-versioned-recovery-policy.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase3b-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase3b-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase3b-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-3c",
+      "title": "Terminal Exhaustion & Override Epoch",
+      "brief": "docs/doom-team/tasks/phase-3c-terminal-exhaustion-override-epoch.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase3c-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase3c-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase3c-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-3d",
+      "title": "Operational Control Provenance",
+      "brief": "docs/doom-team/tasks/phase-3d-operational-control-provenance.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase3d-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase3d-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase3d-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-4a",
+      "title": "Durable Task Contract Consistency",
+      "brief": "docs/doom-team/tasks/phase-4a-durable-task-contract-consistency.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase4a-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase4a-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase4a-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-4b",
+      "title": "DAG Canonicalization & Dependency Safety",
+      "brief": "docs/doom-team/tasks/phase-4b-dag-canonicalization-dependency-safety.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase4b-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase4b-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase4b-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-4c",
+      "title": "Dynamic Routing & AgentFactory",
+      "brief": "docs/doom-team/tasks/phase-4c-dynamic-routing-agentfactory.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase4c-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase4c-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase4c-cleanup-provenance-reviewer-v1"
+      }
+    },
+    {
+      "id": "phase-4d",
+      "title": "Language & Mutation Semantics Regression",
+      "brief": "docs/doom-team/tasks/phase-4d-language-mutation-semantics-regression.md",
+      "agents": {
+        "dev": "doom-dev",
+        "qa": "doom-qa",
+        "reviewer": "doom-reviewer"
+      },
+      "runtimeSeconds": {
+        "dev": 7200,
+        "qa": 3600,
+        "reviewer": 2400
+      },
+      "idempotency": {
+        "dev": "human-doom-phase4d-cleanup-provenance-dev-v1",
+        "qa": "human-doom-phase4d-cleanup-provenance-qa-v1",
+        "reviewer": "human-doom-phase4d-cleanup-provenance-reviewer-v1"
+      }
     }
   ]
 }
