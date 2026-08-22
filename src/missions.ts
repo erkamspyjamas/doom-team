@@ -49,8 +49,25 @@ import {
   decideInterruptedTaskExecution,
   decideStartupRecovery,
   hasUnusedTaskRecoveryBudget,
-  MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
 } from './startup-recovery-policy.js';
+import {
+  CURRENT_POLICY_VERSION,
+  resolveRecoveryPolicy,
+} from './recovery-policy.js';
+
+/**
+ * Resolved policy for the current process.
+ * Replaces four legacy constants:
+ *   activeRecoveryPolicy.budgets.task       -> activeRecoveryPolicy.budgets.task
+ *   activeRecoveryPolicy.budgets.mission    -> activeRecoveryPolicy.budgets.mission
+ *   activeRecoveryPolicy.budgets.finalGate     -> activeRecoveryPolicy.budgets.finalGate
+ *   activeRecoveryPolicy.budgets.zeroTaskReplan -> activeRecoveryPolicy.budgets.zeroTaskReplan
+ *
+ * Changing policy version must not silently reset consumed recovery history:
+ * recovery history is append-only (recovery_attempts ledger + mission_events).
+ * This module only provides the budget ceiling for NEW attempts.
+ */
+const activeRecoveryPolicy = resolveRecoveryPolicy(CURRENT_POLICY_VERSION);
 import {
   inferTaskMutationTargetPaths,
   inferTaskWorkMode as inferTaskWorkModeContract,
@@ -207,9 +224,6 @@ type MissionPlan = {
 const activePlanning = new Set<string>();
 const activeMissionLoops = new Set<string>();
 
-const MAX_AUTONOMOUS_RECOVERY_PER_TASK=3;
-const MAX_AUTONOMOUS_RECOVERY_PER_MISSION=8;
-const MAX_AUTONOMOUS_FINAL_GATE_RECOVERY=3;
 
 type RecoveryResult={
   recovered:boolean;
@@ -1895,8 +1909,8 @@ function appliedFinalGateRecoveryCount(missionId:string){
 
 function finalGateRecoveryBudgetExhausted(missionId:string){
   return (
-    appliedMissionRecoveryCount(missionId)>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION
-    || appliedFinalGateRecoveryCount(missionId)>=MAX_AUTONOMOUS_FINAL_GATE_RECOVERY
+    appliedMissionRecoveryCount(missionId)>=activeRecoveryPolicy.budgets.mission
+    || appliedFinalGateRecoveryCount(missionId)>=activeRecoveryPolicy.budgets.finalGate
   );
 }
 
@@ -3046,8 +3060,8 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
         scopeTaskId: failedTask.id,
         payload: { reason: 'RECOVERY_REFUSED_INTEGRATED_TASK' },
         eventId: refusedEvtId ?? 0,
-        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        missionBudget: activeRecoveryPolicy.budgets.mission,
+        scopeBudget: activeRecoveryPolicy.budgets.task,
         source: 'lead.recovery_integrated_task_refused',
     });
     ledgerTerminalize(
@@ -3061,7 +3075,7 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
 
       const missionAttempts=appliedMissionRecoveryCount(mission.id);
       const taskAttempts=appliedTaskRecoveryCount(mission.id,failedTask.id);
-      if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || taskAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_TASK){
+      if(missionAttempts>=activeRecoveryPolicy.budgets.mission || taskAttempts>=activeRecoveryPolicy.budgets.task){
       event(mission.id,'lead.recovery_budget_exhausted',{
       missionAttempts,taskAttempts,taskKey:failedTask.task_key
       },failedTask.id);
@@ -3072,8 +3086,8 @@ export async function attemptAutonomousTaskRecovery(mission:any,failedTask:any):
       scopeTaskId: failedTask.id,
       payload: { missionAttempts, taskAttempts, taskKey: failedTask.task_key },
       eventId: budgetExhaustedEvtId ?? 0,
-      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-      scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+      missionBudget: activeRecoveryPolicy.budgets.mission,
+      scopeBudget: activeRecoveryPolicy.budgets.task,
       source: 'lead.recovery_budget_exhausted',
     });
 ledgerTerminalize(
@@ -3089,9 +3103,9 @@ taskAttempts + 1,
     kind:'task',
     taskKey:failedTask.task_key,
     missionAttempt:missionAttempts+1,
-    missionBudget:MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+    missionBudget:activeRecoveryPolicy.budgets.mission,
     scopeAttempt:taskAttempts+1,
-    scopeBudget:MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+    scopeBudget:activeRecoveryPolicy.budgets.task,
   },failedTask.id);
       const taskAttemptEvtId = lastEventId(db, mission.id);
         ledgerInitFromAttemptStarted({
@@ -3102,13 +3116,13 @@ taskAttempts + 1,
         kind: 'task',
         taskKey: failedTask.task_key,
         missionAttempt: missionAttempts + 1,
-        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+        missionBudget: activeRecoveryPolicy.budgets.mission,
         scopeAttempt: taskAttempts + 1,
-        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        scopeBudget: activeRecoveryPolicy.budgets.task,
         },
         eventId: taskAttemptEvtId ?? 0,
-        missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-        scopeBudget: MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+        missionBudget: activeRecoveryPolicy.budgets.mission,
+        scopeBudget: activeRecoveryPolicy.budgets.task,
         source: 'lead.recovery_attempt_started',
       });
 
@@ -3235,7 +3249,7 @@ taskAttempts + 1,
           ):Promise<RecoveryResult>{
           const missionAttempts=appliedMissionRecoveryCount(mission.id);
           const finalAttempts=appliedFinalGateRecoveryCount(mission.id);
-          if(missionAttempts>=MAX_AUTONOMOUS_RECOVERY_PER_MISSION || finalAttempts>=MAX_AUTONOMOUS_FINAL_GATE_RECOVERY){
+          if(missionAttempts>=activeRecoveryPolicy.budgets.mission || finalAttempts>=activeRecoveryPolicy.budgets.finalGate){
           event(mission.id,'lead.recovery_budget_exhausted',{missionAttempts,finalAttempts,gateType});
           const finalBudgetExhaustedEvtId = lastEventId(db, mission.id);
           ledgerInitFromAttemptStarted({
@@ -3244,8 +3258,8 @@ taskAttempts + 1,
           scopeTaskId: null,
           payload: { missionAttempts, finalAttempts, gateType },
           eventId: finalBudgetExhaustedEvtId ?? 0,
-          missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-          scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+          missionBudget: activeRecoveryPolicy.budgets.mission,
+          scopeBudget: activeRecoveryPolicy.budgets.finalGate,
           source: 'lead.recovery_budget_exhausted',
         });
         ledgerTerminalize(
@@ -3261,9 +3275,9 @@ taskAttempts + 1,
       kind:'final_gate',
       gateType,
       missionAttempt:missionAttempts+1,
-      missionBudget:MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      missionBudget:activeRecoveryPolicy.budgets.mission,
       scopeAttempt:finalAttempts+1,
-      scopeBudget:MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+      scopeBudget:activeRecoveryPolicy.budgets.finalGate,
     });
   const finalAttemptEvtId = lastEventId(db, mission.id);
       ledgerInitFromAttemptStarted({
@@ -3274,13 +3288,13 @@ taskAttempts + 1,
       kind: 'final_gate',
       gateType,
       missionAttempt: missionAttempts + 1,
-      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
+      missionBudget: activeRecoveryPolicy.budgets.mission,
       scopeAttempt: finalAttempts + 1,
-      scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+      scopeBudget: activeRecoveryPolicy.budgets.finalGate,
       },
       eventId: finalAttemptEvtId ?? 0,
-      missionBudget: MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-      scopeBudget: MAX_AUTONOMOUS_FINAL_GATE_RECOVERY,
+      missionBudget: activeRecoveryPolicy.budgets.mission,
+      scopeBudget: activeRecoveryPolicy.budgets.finalGate,
       source: 'lead.recovery_attempt_started',
     });
   event(mission.id,'lead.final_gate_recovery_started',{gateType,gateId:gateResult.gateId});
@@ -4505,8 +4519,8 @@ function exhaustedMissionHasUnusedTaskRecoveryBudget(missionId:string){
   return hasUnusedTaskRecoveryBudget({
     missionAttempts,
     taskAttempts,
-    maxMissionAttempts:MAX_AUTONOMOUS_RECOVERY_PER_MISSION,
-    maxTaskAttempts:MAX_AUTONOMOUS_RECOVERY_PER_TASK,
+    maxMissionAttempts:activeRecoveryPolicy.budgets.mission,
+    maxTaskAttempts:activeRecoveryPolicy.budgets.task,
   });
 }
 
@@ -4787,14 +4801,14 @@ export function resumeAutonomousMissions(){
       && !missionHasIntegratedTaskChanges(missionId)
     ){
       const semanticReplanAttempts=autonomousPlanningReplanAttemptCount(missionId);
-      if(semanticReplanAttempts>=MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS){
+      if(semanticReplanAttempts>=activeRecoveryPolicy.budgets.zeroTaskReplan){
         if(!autonomousReplanBudgetExhaustionRecorded(missionId)){
           event(missionId,'mission.autonomous_replan_budget_exhausted',{
             previousStatus:status,
             previousError:error || null,
             mode:'semantic_replan',
             attempts:semanticReplanAttempts,
-            budget:MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
+            budget:activeRecoveryPolicy.budgets.zeroTaskReplan,
           });
         }
         skipped.push(missionId);
@@ -4805,7 +4819,7 @@ export function resumeAutonomousMissions(){
         reason:'V0.12.16 task-mode/role contract detected a legacy semantically invalid DAG.',
         violations:semanticReplanReasons,
         attempt:semanticReplanAttempts+1,
-        budget:MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
+        budget:activeRecoveryPolicy.budgets.zeroTaskReplan,
       });
 
       queueMicrotask(()=>{
@@ -4966,7 +4980,7 @@ export function resumeAutonomousMissions(){
       taskCount:taskTotal,
       errorText:error,
       autonomousReplanAttempts,
-      maxAutonomousReplanAttempts:MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS,
+      maxAutonomousReplanAttempts:activeRecoveryPolicy.budgets.zeroTaskReplan,
       blockedTaskRecoveryAllowed,
     });
 

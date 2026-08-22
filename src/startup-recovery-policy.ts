@@ -1,30 +1,51 @@
-export const MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS = 3;
+/**
+ * Startup Recovery Policy
+ *
+ * Decision logic for determining what action a mission should take when
+ * it is first started and its recovery state is inspected.
+ *
+ * All budget values are now resolved through the versioned recovery policy
+ * (src/recovery-policy.ts) rather than copied as local constants.
+ */
 
-export const RECOVERABLE_PLANNING_FAILURE_CODES = [
-  'EXECUTION_DISAPPEARED',
-  'EXECUTION_WAIT_TIMEOUT',
-  'JSON_OBJECT_NOT_FOUND',
-  'LEAD_PLAN_TASKS_REQUIRED',
-  'LEAD_PLAN_TOO_MANY_TASKS',
-  'MISSION_HAS_NO_TASKS',
-  'PLAN_QUALITY_VALIDATION_FAILED_AFTER_REPAIR',
-] as const;
+import {
+  CURRENT_POLICY_VERSION,
+  RECOVERABLE_PLANNING_FAILURE_CODES,
+  RECOVERABLE_PLANNING_FAILURE_PREFIXES,
+  FAIL_CLOSED_SENTINEL,
+  resolveRecoveryPolicy,
+} from './recovery-policy.js';
 
-export const RECOVERABLE_PLANNING_FAILURE_PREFIXES = [
-  'LEAD_PLANNING_EXECUTION_',
-  'LEAD_PLAN_AGENT_OUTSIDE_TEAM:',
-  'LEAD_PLAN_DUPLICATE_KEY:',
-  'LEAD_PLAN_EXPECTED_OUTCOME_REQUIRED:',
-  'LEAD_PLAN_INSTRUCTION_REQUIRED:',
-  'LEAD_PLAN_SELF_DEPENDENCY:',
-  'LEAD_PLAN_TASK_KEY_REQUIRED:',
-  'LEAD_PLAN_TITLE_REQUIRED:',
-  'LEAD_PLAN_UNKNOWN_DEPENDENCY:',
-  'LEAD_PLAN_WORK_MODE_INVALID:',
-  'MISSION_PLAN_CYCLE:',
-  'PLAN_CONSTRAINT_REPAIR_EXECUTION_FAILED:',
-  'PLAN_QUALITY_VIOLATION_AFTER_REPAIR:',
-] as const;
+// ─── Public budget accessor ────────────────────────────────────────────────
+
+/**
+ * Resolve the zero-task replan budget for a given policy version.
+ *
+ * Defaults to CURRENT_POLICY_VERSION when no version is provided, matching
+ * the legacy MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS = 3 exactly.
+ *
+ * Changing CURRENT_POLICY_VERSION bumps the policy label; individual missions
+ * stamped with an older version continue to use that version's budget without
+ * resetting their consumed history.
+ */
+export function resolveZeroTaskReplanBudget(
+  policyVersion = CURRENT_POLICY_VERSION,
+): number {
+  const policy = resolveRecoveryPolicy(policyVersion);
+  return policy.budgets.zeroTaskReplan;
+}
+
+/**
+ * @deprecated Use resolveZeroTaskReplanBudget(policyVersion) for new code.
+ *
+ * Backward-compatible re-export so diagnostics.ts and any call-site that
+ * imports MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS directly still resolves
+ * to the policy-layer value (3 for the default '2025-08-22-v1').
+ */
+export const MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS: number =
+  resolveZeroTaskReplanBudget();
+
+// ─── Internal allowlists (imported from policy module) ──────────────────────
 
 const RECOVERABLE_PLANNING_FAILURE_WRAPPERS = [
   'AUTO_PLAN_FAILED:',
@@ -39,6 +60,8 @@ const AUTONOMOUS_RESUMABLE_STATUSES = new Set([
   'validating',
   'reviewing',
 ]);
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export type StartupRecoveryAction = 'plan' | 'replan' | 'run' | 'skip';
 
@@ -65,6 +88,8 @@ export type StartupRecoveryPolicyInput = {
   taskCount: number;
   errorText?: string | null;
   autonomousReplanAttempts?: number;
+  /** Optional explicit policy version; defaults to CURRENT_POLICY_VERSION. */
+  policyVersion?: string;
   maxAutonomousReplanAttempts?: number;
   blockedTaskRecoveryAllowed?: boolean;
 };
@@ -87,19 +112,20 @@ export type InterruptedTaskExecutionDecision =
       detail: string;
     };
 
-export function decideInterruptedTaskExecution(input:{
+// ─── Task-interrupted decision ───────────────────────────────────────────────
+
+export function decideInterruptedTaskExecution(input: {
   status?: unknown;
   errorText?: unknown;
-}):InterruptedTaskExecutionDecision {
+}): InterruptedTaskExecutionDecision {
   const status =
     typeof input.status === 'string'
       ? input.status.trim()
       : '';
 
-  if(status === 'error'){
+  if (status === 'error') {
     const errorText =
-      typeof input.errorText === 'string'
-      && input.errorText.trim()
+      typeof input.errorText === 'string' && input.errorText.trim()
         ? input.errorText
         : 'EXECUTION_FAILED';
 
@@ -123,30 +149,34 @@ export function decideInterruptedTaskExecution(input:{
   };
 }
 
-export function hasUnusedTaskRecoveryBudget(input:{
-  missionAttempts:number;
-  taskAttempts:number;
-  maxMissionAttempts:number;
-  maxTaskAttempts:number;
-}){
-  const values=Object.values(input);
-  if(values.some(value=>!Number.isInteger(value) || value<0))return false;
-  if(input.maxMissionAttempts<1 || input.maxTaskAttempts<1)return false;
+// ─── Budget utility ──────────────────────────────────────────────────────────
+
+export function hasUnusedTaskRecoveryBudget(input: {
+  missionAttempts: number;
+  taskAttempts: number;
+  maxMissionAttempts: number;
+  maxTaskAttempts: number;
+}): boolean {
+  const values = Object.values(input);
+  if (values.some((v) => !Number.isInteger(v) || v < 0)) return false;
+  if (input.maxMissionAttempts < 1 || input.maxTaskAttempts < 1) return false;
   return (
-    input.missionAttempts<input.maxMissionAttempts
-    && input.taskAttempts<input.maxTaskAttempts
+    input.missionAttempts < input.maxMissionAttempts &&
+    input.taskAttempts < input.maxTaskAttempts
   );
 }
 
-function unwrapPlanningFailure(errorText: string) {
+// ─── Planning failure classifier ─────────────────────────────────────────────
+
+function unwrapPlanningFailure(errorText: string): string {
   let error = errorText.trim();
 
   // Wrappers are accepted only when their nested cause is itself allowlisted.
   // This prevents AUTO_PLAN_FAILED from turning configuration or safety errors
   // into an autonomous restart loop.
   for (let depth = 0; depth < 4; depth++) {
-    const wrapper = RECOVERABLE_PLANNING_FAILURE_WRAPPERS.find((value) =>
-      error.startsWith(value)
+    const wrapper = RECOVERABLE_PLANNING_FAILURE_WRAPPERS.find((w) =>
+      error.startsWith(w)
     );
     if (!wrapper) break;
     error = error.slice(wrapper.length).trim();
@@ -155,26 +185,31 @@ function unwrapPlanningFailure(errorText: string) {
   return error;
 }
 
-export function isRecoverablePlanningFailure(errorText: unknown) {
+export function isRecoverablePlanningFailure(errorText: unknown): boolean {
+  const policy = resolveRecoveryPolicy(CURRENT_POLICY_VERSION);
+  // FAIL_CLOSED_SENTINEL (and any invalid policy) returns false -- no
+  // planning failure is recoverable under a failed-closed policy.
+  if (policy === FAIL_CLOSED_SENTINEL) return false;
+
   if (typeof errorText !== 'string' || !errorText.trim()) return false;
 
   const error = unwrapPlanningFailure(errorText);
   if (!error) return false;
 
-  if (
-    (RECOVERABLE_PLANNING_FAILURE_CODES as readonly string[]).includes(error)
-  ) {
+  if (policy.recoverablePlanningFailureCodes.includes(error)) {
     return true;
   }
 
-  return RECOVERABLE_PLANNING_FAILURE_PREFIXES.some((prefix) =>
+  return policy.recoverablePlanningFailurePrefixes.some((prefix) =>
     error.startsWith(prefix)
   );
 }
 
+// ─── Startup recovery decision ───────────────────────────────────────────────
+
 function skip(
   reason: StartupRecoveryReason,
-  budget: number
+  budget: number,
 ): StartupRecoveryDecision {
   return {
     action: 'skip',
@@ -186,11 +221,17 @@ function skip(
 }
 
 export function decideStartupRecovery(
-  input: StartupRecoveryPolicyInput
+  input: StartupRecoveryPolicyInput,
 ): StartupRecoveryDecision {
-  const budget =
-    input.maxAutonomousReplanAttempts ??
-    MAX_AUTONOMOUS_ZERO_TASK_REPLAN_ATTEMPTS;
+  const policyVersion = input.policyVersion ?? CURRENT_POLICY_VERSION;
+  const policy = resolveRecoveryPolicy(policyVersion);
+  const budget = policy.budgets.zeroTaskReplan;
+
+  // fail-closed: unknown or unsafe policy → no replans allowed
+  if (budget < 1) {
+    return skip('planning_recovery_budget_exhausted', budget);
+  }
+
   const attempts = input.autonomousReplanAttempts ?? 0;
 
   if (
@@ -210,11 +251,11 @@ export function decideStartupRecovery(
   }
 
   if (input.taskCount > 0) {
-    if(status==='blocked' && input.blockedTaskRecoveryAllowed!==true){
-      return skip('blocked_tasks_not_recoverable',budget);
+    if (status === 'blocked' && input.blockedTaskRecoveryAllowed !== true) {
+      return skip('blocked_tasks_not_recoverable', budget);
     }
-    if(status==='new'){
-      return skip('inconsistent_new_tasks',budget);
+    if (status === 'new') {
+      return skip('inconsistent_new_tasks', budget);
     }
     return {
       action: 'run',

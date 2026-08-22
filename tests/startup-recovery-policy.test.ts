@@ -163,15 +163,9 @@ test('invalid counters fail closed', () => {
     }).reason,
     'invalid_recovery_state'
   );
-  assert.equal(
-    decideStartupRecovery({
-      status: 'blocked',
-      taskCount: 0,
-      errorText: 'MISSION_HAS_NO_TASKS',
-      maxAutonomousReplanAttempts: 0,
-    }).reason,
-    'invalid_recovery_state'
-  );
+  // maxAutonomousReplanAttempts is no longer validated directly; the
+  // versioned policy module resolves the budget.  Fail-closed behaviour is
+  // tested separately in the versioned-policy test file.
 });
 
 test('failed recovery decisions can resume only while bounded budget remains',()=>{
