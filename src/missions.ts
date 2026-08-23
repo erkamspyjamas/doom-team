@@ -4074,6 +4074,12 @@ export function createMission(input:any) {
     `).run(missionId,cfg.defaultWorkspace,t,t);
   })();
 
+  // Create initial epoch reset event so recovery_attempts have a valid epoch_event_id
+  const epochEventId = db.prepare(`
+    INSERT INTO mission_events (mission_id, task_id, event_type, payload_json, created_at)
+    VALUES (?, NULL, 'lead.recovery_budget_epoch_reset', '{}', ?)
+  `).run(missionId, t).lastInsertRowid;
+
   event(missionId,'mission.created',{
     teamId:team.id,
     leadAgentId,
@@ -5337,15 +5343,17 @@ export function runMission(missionId:string) {
   return getMission(missionId);
 }
 
-export function pauseMission(missionId:string) {
+export function pauseMission(missionId:string, source:'manual'|'autonomous'='manual', reason:string='') {
+  if (source !== 'manual' && source !== 'autonomous') throw new Error('INVALID_SOURCE');
   const mission=missionRow(missionId);
   if(!mission)throw new Error('MISSION_NOT_FOUND');
   db.prepare(`UPDATE missions SET status='paused',updated_at=? WHERE id=?`).run(now(),missionId);
-  event(missionId,'mission.paused',{});
+  event(missionId,'mission.paused',{ source, reason });
   return getMission(missionId);
 }
 
-export function retryMissionTask(missionId:string,taskId:string) {
+export function retryMissionTask(missionId:string,taskId:string, source:'manual'|'autonomous', reason?:string) {
+  if (source !== 'manual' && source !== 'autonomous') throw new Error('INVALID_SOURCE');
   const task:any=db.prepare(`
     SELECT * FROM mission_tasks WHERE id=? AND mission_id=?
   `).get(taskId,missionId);
@@ -5363,11 +5371,25 @@ export function retryMissionTask(missionId:string,taskId:string) {
   db.prepare(`
     UPDATE missions SET status='ready',error_text=NULL,ended_at=NULL,updated_at=? WHERE id=?
   `).run(now(),missionId);
-  event(missionId,'task.retry_requested',{attempt:task.attempt_no+1},taskId);
+  event(missionId,'task.retry_requested',{attempt:task.attempt_no+1, source, reason:reason ?? undefined},taskId);
+  const eventId = lastEventId(db, missionId);
+
+  // Record the attempt in the recovery_attempts ledger
+  ledgerInitFromAttemptStarted({
+    missionId,
+    kind: 'task',
+    scopeTaskId: taskId,
+    payload: { reason: reason ?? 'RETRY_TASK' },
+    eventId: eventId ?? 0,
+    missionBudget: activeRecoveryPolicy.budgets.mission,
+    scopeBudget: activeRecoveryPolicy.budgets.task,
+    source: `${source}:lead.retry_task`,
+  });
   return getMission(missionId);
 }
 
-export function reassignMissionTask(missionId:string,taskId:string,agentId:string) {
+export function reassignMissionTask(missionId:string,taskId:string,agentId:string, source:'manual'|'autonomous', reason?:string) {
+  if (source !== 'manual' && source !== 'autonomous') throw new Error('INVALID_SOURCE');
   const mission=missionRow(missionId);
   if(!mission)throw new Error('MISSION_NOT_FOUND');
 
@@ -5400,8 +5422,23 @@ export function reassignMissionTask(missionId:string,taskId:string,agentId:strin
 
   event(missionId,'task.reassigned',{
     fromAgentId:task.assigned_agent_id,
-    toAgentId:agentId
+    toAgentId:agentId,
+    source,
+    reason:reason ?? undefined
   },taskId);
+  const eventId = lastEventId(db, missionId);
+
+  // Record the attempt in the recovery_attempts ledger
+  ledgerInitFromAttemptStarted({
+    missionId,
+    kind: 'task',
+    scopeTaskId: taskId,
+    payload: { reason: reason ?? 'REASSIGN_TASK' },
+    eventId: eventId ?? 0,
+    missionBudget: activeRecoveryPolicy.budgets.mission,
+    scopeBudget: activeRecoveryPolicy.budgets.task,
+    source: `${source}:lead.reassign_task`,
+  });
 
   return getMission(missionId);
 }
@@ -5410,8 +5447,11 @@ export function reassignMissionTask(missionId:string,taskId:string,agentId:strin
 export async function cancelMissionTask(
   missionId:string,
   taskId:string,
-  mode:'cancel'|'kill'='cancel'
+  mode:'cancel'|'kill'='cancel',
+  source:'manual'|'autonomous',
+  reason?:string
 ){
+  if (source !== 'manual' && source !== 'autonomous') throw new Error('INVALID_SOURCE');
   const mission=missionRow(missionId);
   if(!mission)throw new Error('MISSION_NOT_FOUND');
 
@@ -5436,17 +5476,20 @@ export async function cancelMissionTask(
     UPDATE missions SET status='blocked',error_text=?,updated_at=? WHERE id=?
   `).run(`TASK_CANCELLED:${task.task_key}`,now(),missionId);
 
-  event(missionId,mode==='kill'?'task.killed':'task.cancelled',{mode},taskId);
+  event(missionId,mode==='kill'?'task.killed':'task.cancelled',{mode, source, reason:reason ?? undefined},taskId);
   return getMission(missionId);
 }
 
 export async function stopMission(
   missionId:string,
-  mode:'cancel'|'kill'='cancel'
+  mode:'cancel'|'kill'='cancel',
+  source:'manual'|'autonomous'='manual',
+  reason?:string
 ){
+  if (source !== 'manual' && source !== 'autonomous') throw new Error('INVALID_SOURCE');
   const mission=missionRow(missionId);
   if(!mission)throw new Error('MISSION_NOT_FOUND');
-  if(mission.status==='done' || mission.status==='cancelled')return getMission(missionId);
+  if(mission.status==='done' || mission.status==='cancelled')throw new Error('MISSION_ALREADY_TERMINAL');
 
   const executionIds=new Set<string>();
   if(mission.planning_execution_id)executionIds.add(String(mission.planning_execution_id));
@@ -5491,7 +5534,9 @@ export async function stopMission(
   cancelMissionApprovals(missionId,mode);
   const archived=archiveMissionSpecialists(missionId,mode==='kill'?'mission_killed':'mission_cancelled');
   event(missionId,mode==='kill'?'mission.killed':'mission.cancelled',{
-    mode,executionIds:[...executionIds],archivedSpecialists:archived.length
+    mode,executionIds:[...executionIds],archivedSpecialists:archived.length,
+    source,
+    reason:reason ?? undefined
   });
   return getMission(missionId);
 }

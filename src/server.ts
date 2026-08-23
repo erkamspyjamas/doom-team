@@ -288,44 +288,90 @@ app.post<{Params:{id:string}}>('/api/missions/:id/run',async(req,reply)=>{
   catch(err:any){return reply.code(409).send({code:'MISSION_RUN_FAILED',details:String(err?.message??err)})}
 });
 
-app.post<{Params:{id:string}}>('/api/missions/:id/pause',async(req,reply)=>{
-  try{return pauseMission(req.params.id)}
+app.post<{Params:{id:string}, Body:{ reason?: string } }>('/api/missions/:id/pause',async(req,reply)=>{
+  try{
+    const { reason } = req.body ?? {};
+    return pauseMission(req.params.id, 'manual', reason ?? '');
+  }
   catch(err:any){return reply.code(409).send({code:'MISSION_PAUSE_FAILED',details:String(err?.message??err)})}
 });
 
 app.post<{Params:{id:string;taskId:string}}>('/api/missions/:id/tasks/:taskId/retry',async(req,reply)=>{
-  try{return retryMissionTask(req.params.id,req.params.taskId)}
+  try{
+    const { source, reason } = req.body as { source?: string; reason?: string } ?? {};
+    if (source === undefined) {
+      return reply.code(400).send({code:'MISSING_SOURCE',details:'Source is required'});
+    }
+    if (source !== 'manual' && source !== 'autonomous') {
+      return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+    }
+    // Now source is 'manual' | 'autonomous'
+    return retryMissionTask(req.params.id, req.params.taskId, source, reason);
+  }
   catch(err:any){return reply.code(409).send({code:'MISSION_TASK_RETRY_FAILED',details:String(err?.message??err)})}
 });
 
 
-app.post<{Params:{id:string;taskId:string};Body:{agentId?:string}}>('/api/missions/:id/tasks/:taskId/reassign',async(req,reply)=>{
+app.post<{Params:{id:string;taskId:string};Body:{agentId?:string; source?:string; reason?:string}}>('/api/missions/:id/tasks/:taskId/reassign',async(req,reply)=>{
   try{
-    if(!req.body?.agentId)return reply.code(400).send({code:'AGENT_ID_REQUIRED'});
-    return reassignMissionTask(req.params.id,req.params.taskId,String(req.body.agentId));
+    const { agentId, source, reason } = req.body as { agentId?: string; source?: string; reason?: string } ?? {};
+    if(!agentId)return reply.code(400).send({code:'AGENT_ID_REQUIRED'});
+    // Validate source is either 'manual' or 'autonomous'
+    if (source !== 'manual' && source !== 'autonomous') {
+      return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+    }
+    return reassignMissionTask(req.params.id,req.params.taskId,agentId, source, reason);
   }catch(err:any){
     return reply.code(409).send({code:'MISSION_TASK_REASSIGN_FAILED',details:String(err?.message??err)});
   }
 });
 
 
-app.post<{Params:{id:string}}>('/api/missions/:id/cancel',async(req,reply)=>{
-  try{return await stopMission(req.params.id,'cancel')}
+app.post<{Params:{id:string}, Body:{ source?: string; reason?: string } }>('/api/missions/:id/cancel',async(req,reply)=>{
+  try{
+    const { source: sourceParam, reason } = req.body as { source?: string; reason?: string } ?? {};
+    const sourceValue = sourceParam ?? 'manual';
+    if (sourceValue !== 'manual' && sourceValue !== 'autonomous') {
+      return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+    }
+    return await stopMission(req.params.id, 'cancel', sourceValue, reason);
+  }
   catch(err:any){return reply.code(409).send({code:'MISSION_CANCEL_FAILED',details:String(err?.message??err)})}
 });
 
-app.post<{Params:{id:string}}>('/api/missions/:id/kill',async(req,reply)=>{
-  try{return await stopMission(req.params.id,'kill')}
-  catch(err:any){return reply.code(409).send({code:'MISSION_KILL_FAILED',details:String(err?.message??err)})}
-});
+app.post<{Params:{id:string}, Body:{ source?: string; reason?: string } }>('/api/missions/:id/kill',async(req,reply)=>{
+     try{
+       const { source: sourceParam, reason } = req.body as { source?: string; reason?: string } ?? {};
+       const sourceValue = sourceParam ?? 'manual';
+       if (sourceValue !== 'manual' && sourceValue !== 'autonomous') {
+         return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+       }
+       return await stopMission(req.params.id, 'kill', sourceValue, reason);
+     }
+     catch(err:any){return reply.code(409).send({code:'MISSION_KILL_FAILED',details:String(err?.message??err)})}
+   });
 
-app.post<{Params:{id:string;taskId:string}}>('/api/missions/:id/tasks/:taskId/cancel',async(req,reply)=>{
-  try{return await cancelMissionTask(req.params.id,req.params.taskId,'cancel')}
+app.post<{Params:{id:string;taskId:string}, Body:{ source?: string; reason?: string } }>('/api/missions/:id/tasks/:taskId/cancel',async(req,reply)=>{
+  try{
+    const { source: sourceParam, reason } = req.body as { source?: string; reason?: string } ?? {};
+    const sourceValue = sourceParam ?? 'manual';
+    if (sourceValue !== 'manual' && sourceValue !== 'autonomous') {
+      return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+    }
+    return await cancelMissionTask(req.params.id, req.params.taskId, 'cancel', sourceValue, reason);
+  }
   catch(err:any){return reply.code(409).send({code:'MISSION_TASK_CANCEL_FAILED',details:String(err?.message??err)})}
 });
 
-app.post<{Params:{id:string;taskId:string}}>('/api/missions/:id/tasks/:taskId/kill',async(req,reply)=>{
-  try{return await cancelMissionTask(req.params.id,req.params.taskId,'kill')}
+app.post<{Params:{id:string;taskId:string}, Body:{ source?: string; reason?: string } }>('/api/missions/:id/tasks/:taskId/kill',async(req,reply)=>{
+  try{
+    const { source: sourceParam, reason } = req.body as { source?: string; reason?: string } ?? {};
+    const sourceValue = sourceParam ?? 'manual';
+    if (sourceValue !== 'manual' && sourceValue !== 'autonomous') {
+      return reply.code(400).send({code:'INVALID_SOURCE',details:'Source must be either "manual" or "autonomous"'});
+    }
+    return await cancelMissionTask(req.params.id, req.params.taskId, 'kill', sourceValue, reason);
+  }
   catch(err:any){return reply.code(409).send({code:'MISSION_TASK_KILL_FAILED',details:String(err?.message??err)})}
 });
 

@@ -290,7 +290,8 @@ for(
         ()=>{
           retryMissionTask(
             fixture.missionId,
-            fixture.taskId
+            fixture.taskId,
+            'manual'
           );
         },
         (error:unknown)=>{
@@ -359,7 +360,8 @@ test(
 
     const result:any=retryMissionTask(
       fixture.missionId,
-      fixture.taskId
+      fixture.taskId,
+      'manual'
     );
 
     assert.equal(
@@ -436,7 +438,8 @@ test(
 
     const result:any=retryMissionTask(
       fixture.missionId,
-      fixture.taskId
+      fixture.taskId,
+      'manual'
     );
 
     assert.equal(
