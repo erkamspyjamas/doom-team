@@ -62,6 +62,8 @@ def test_evidence_has_required_fields() -> None:
     evidence = Evidence(
         id="ev-1",
         candidate=candidate,
+        objective_id="obj-1",
+        mission_id="mission-1",
         producer_role="dev",
         producer_run="run-1",
         command="make test",
@@ -73,6 +75,8 @@ def test_evidence_has_required_fields() -> None:
     )
     assert evidence.candidate is candidate
     assert evidence.candidate.attempt.recovery_epoch == 0
+    assert evidence.objective_id == "obj-1"
+    assert evidence.mission_id == "mission-1"
 
 
 def test_recovery_epoch_holds_budget() -> None:

@@ -165,6 +165,8 @@ class Candidate:
 class Evidence:
     id: str
     candidate: Candidate
+    objective_id: str
+    mission_id: str
     producer_role: str
     producer_run: str
     command: str
