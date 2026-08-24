@@ -3,7 +3,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "doom-team"nversion = "0.1.0"
+name = "doom-team"
+version = "0.1.0"
 description = "Self-hosted autonomous software-engineering platform"
 readme = "README.md"
 requires-python = ">=3.11"
