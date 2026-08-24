@@ -120,7 +120,8 @@ class GitWorkspace(WorkspacePort, RepositoryPort):
                 full = Path(root) / name
                 if full.is_symlink():
                     target = full.resolve()
-                    if not target.is_relative_to(self.base_dir):
+                    # A symlink is an escape if it resolves outside the workspace directory.
+                    if not target.is_relative_to(path):
                         return True
         return False
 
