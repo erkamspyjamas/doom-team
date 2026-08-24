@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -51,6 +53,17 @@ def _evidence_to_dict(evidence: Evidence) -> dict[str, Any]:
     }
 
 
+def _evidence_digest(candidate: Candidate, evidence_fields: dict[str, Any]) -> str:
+    """Compute a candidate-bound SHA-256 digest from candidate and evidence fields."""
+    payload = {
+        "candidate_id": candidate.id,
+        "candidate_commit": candidate.candidate_commit,
+        **evidence_fields,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode()
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
 def run_candidate_lifecycle(
     task: TaskContract,
     mission_id: str,
@@ -84,19 +97,24 @@ def run_candidate_lifecycle(
         candidate_commit=candidate_commit,
         workspace_id=ws_id,
     )
+
+    evidence_fields = {
+        "objective_id": task.objective_id,
+        "mission_id": mission_id,
+        "producer_role": "dev",
+        "producer_run": producer_run,
+        "command": "pytest",
+        "artifacts": (),
+        "actual_model": actual_model,
+        "actual_runtime": actual_runtime,
+    }
+    digest = _evidence_digest(candidate, evidence_fields)
     evidence = Evidence(
         id=f"ev_{uuid.uuid4().hex[:8]}",
         candidate=candidate,
-        objective_id=task.objective_id,
-        mission_id=mission_id,
-        producer_role="dev",
-        producer_run=producer_run,
-        command="pytest",
-        artifacts=(),
-        actual_model=actual_model,
-        actual_runtime=actual_runtime,
+        **evidence_fields,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
-        digest="sha256:todo",
+        digest=digest,
     )
     evidence_store.save(_evidence_to_dict(evidence))
 
