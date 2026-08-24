@@ -74,7 +74,7 @@ class ApprovalPort(Protocol):
 
 @runtime_checkable
 class OrchestrationPort(Protocol):
-    def enqueue(self, task: Any) -> str:
+    def enqueue(self, task: Any, dependencies: tuple[str, ...] = ()) -> str:
         """Enqueue a durable unit of work and return its id."""
 
     def observe(self, run_id: str) -> Any:
