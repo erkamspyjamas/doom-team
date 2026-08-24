@@ -44,6 +44,16 @@ def _make_candidate_and_evidence(ws: GitWorkspace, task_id: str = "task-1") -> t
     return candidate, evidence
 
 
+def _workspace_state(ws: GitWorkspace, workspace_id: str) -> dict[str, str]:
+    """Capture the full file tree (excluding .git) as a content map."""
+    ws_path = ws._workspace_path(workspace_id)
+    state: dict[str, str] = {}
+    for file in sorted(ws_path.rglob("*")):
+        if file.is_file() and ".git" not in file.parts:
+            state[str(file.relative_to(ws_path))] = file.read_text()
+    return state
+
+
 def test_lifecycle_runs_qa_and_reviewer_and_persists_verdicts(tmp_path: Path) -> None:
     ws = GitWorkspace(tmp_path / "workspaces")
     candidate, evidence = _make_candidate_and_evidence(ws)
@@ -109,8 +119,8 @@ def test_lifecycle_is_read_only_for_qa_and_reviewer(tmp_path: Path) -> None:
     ws = GitWorkspace(tmp_path / "workspaces")
     candidate, evidence = _make_candidate_and_evidence(ws)
 
-    # Snapshot the workspace state before running the lifecycle
-    before = ws.snapshot(candidate.workspace_id)
+    # Capture the workspace state before running the lifecycle
+    before = _workspace_state(ws, candidate.workspace_id)
 
     verdict_store = InMemoryVerdictStore()
     lifecycle = Lifecycle(verdict_store)
@@ -126,5 +136,5 @@ def test_lifecycle_is_read_only_for_qa_and_reviewer(tmp_path: Path) -> None:
     lifecycle.run(candidate, evidence, qa_checker, reviewer_checker)
 
     # Verify the workspace was not mutated
-    after = ws.snapshot(candidate.workspace_id)
+    after = _workspace_state(ws, candidate.workspace_id)
     assert after == before
