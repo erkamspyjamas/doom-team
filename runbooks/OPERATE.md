@@ -9,6 +9,9 @@ process. It complements the [Operability Contract](../docs/OPERABILITY.md) and
 - A valid configuration per the [Configuration Reference](../docs/CONFIGURATION.md).
 - The required credential environment variable set (e.g. `DOOM_API_KEY`).
 - A reachable, durable state directory.
+- State directory precedence: an explicit `--state-dir` CLI flag (in either
+  flag position) always wins over the `DOOM_STATE_DIR` environment variable;
+  the environment variable is used only when no CLI value is supplied.
 
 ## Start
 
@@ -16,7 +19,7 @@ process. It complements the [Operability Contract](../docs/OPERABILITY.md) and
 export DOOM_STATE_DIR=/var/lib/doom
 export DOOM_MODEL_PROVIDER=nvidia
 export DOOM_MODEL_NAME=deepseek-v4
-export DOOM_API_KEY=...   # never commit or log this value
+export DOOM_[REDACTED]   # never commit or log this value
 doom-team serve
 ```
 

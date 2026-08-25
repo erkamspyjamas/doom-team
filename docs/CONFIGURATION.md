@@ -12,6 +12,14 @@ Settings are resolved from layered sources; higher precedence wins:
 3. Configuration file (JSON object)
 4. Safe defaults (optional settings only)
 
+For the CLI, the `--state-dir` flag is an explicit argument and always wins
+over the `DOOM_STATE_DIR` environment variable for every command that reads
+or mutates state (`backup`, `restore`, `approve`, `status`, `doctor`,
+`serve`). It may be given in either the global position
+(`doom-team --state-dir /x backup ...`) or the subcommand position
+(`doom-team backup --state-dir /x ...`). The environment variable is used only
+when no CLI value is supplied.
+
 ## Required settings (fail closed)
 
 Startup fails with `ConfigError` when any required setting or the provider

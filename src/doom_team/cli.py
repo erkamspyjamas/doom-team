@@ -38,24 +38,48 @@ EXIT_STATE_ERROR = 2
 EXIT_APPROVAL_ERROR = 3
 
 
+def _add_state_dir(parser: argparse.ArgumentParser) -> None:
+    """Add ``--state-dir`` that never overwrites an explicit CLI value.
+
+    ``default=SUPPRESS`` means the attribute is only set on the namespace when
+    the user actually passes the flag, so a subparser default can never clobber
+    an explicit value supplied in the parent position (or vice versa). The
+    effective state directory is resolved once in :func:`_resolve_state_dir`.
+    """
+    parser.add_argument(
+        "--state-dir",
+        default=argparse.SUPPRESS,
+        help="Override the durable state directory (always wins over DOOM_STATE_DIR)",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="doom-team",
         description="Doom Team service entrypoint",
     )
-    parser.add_argument(
-        "--state-dir",
-        help="Override the durable state directory",
-    )
+    _add_state_dir(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("serve", help="Run the service loop with graceful shutdown")
-    subparsers.add_parser("status", help="Show operator-readable current state")
-    subparsers.add_parser("doctor", help="Validate configuration and durable state")
+    serve_parser = subparsers.add_parser(
+        "serve", help="Run the service loop with graceful shutdown"
+    )
+    _add_state_dir(serve_parser)
+
+    status_parser = subparsers.add_parser(
+        "status", help="Show operator-readable current state"
+    )
+    _add_state_dir(status_parser)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Validate configuration and durable state"
+    )
+    _add_state_dir(doctor_parser)
 
     approve_parser = subparsers.add_parser(
         "approve", help="Record a human approval (never deploys)"
     )
+    _add_state_dir(approve_parser)
     approve_parser.add_argument("--action", required=True, help="Approval action")
     approve_parser.add_argument("--frontier-sha", required=True, help="Frontier SHA")
     approve_parser.add_argument("--operator", required=True, help="Operator identity")
@@ -71,23 +95,36 @@ def _build_parser() -> argparse.ArgumentParser:
     backup_parser = subparsers.add_parser(
         "backup", help="Create a verified snapshot of durable state"
     )
+    _add_state_dir(backup_parser)
     backup_parser.add_argument("--backup-dir", required=True, help="Backup destination root")
-    backup_parser.add_argument("--state-dir", help="Override the durable state directory")
 
     restore_parser = subparsers.add_parser(
         "restore", help="Restore durable state from a verified backup"
     )
+    _add_state_dir(restore_parser)
     restore_parser.add_argument("--backup-path", required=True, help="Path to a backup")
-    restore_parser.add_argument("--state-dir", help="Override the durable state directory")
 
     return parser
 
 
+def _resolve_state_dir(args: argparse.Namespace) -> str | None:
+    """Return the effective state directory: explicit CLI > ``DOOM_STATE_DIR``.
+
+    The CLI flag may be supplied in either the parent position
+    (``doom-team --state-dir /x backup ...``) or the subcommand position
+    (``doom-team backup --state-dir /x ...``); both resolve to the same single
+    value here. The environment variable is used only when no CLI value is
+    given. There is no default for ``state_dir``; it is required.
+    """
+    cli_value = getattr(args, "state_dir", None)
+    if cli_value:
+        return str(cli_value)
+    return os.environ.get("DOOM_STATE_DIR")
+
+
 def _load_settings(args: argparse.Namespace) -> Settings:
-    """Load settings from config layered sources with optional CLI override."""
-    return ConfigLoader().load(
-        state_dir=args.state_dir if getattr(args, "state_dir", None) else None
-    )
+    """Load settings with the single resolved state directory."""
+    return ConfigLoader().load(state_dir=_resolve_state_dir(args))
 
 
 def _make_event_sink(settings: Settings) -> DurableEventSink:
@@ -249,7 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command in ("backup", "restore"):
-        state_dir = args.state_dir or os.environ.get("DOOM_STATE_DIR")
+        state_dir = _resolve_state_dir(args)
         if not state_dir:
             print("configuration error: state_dir is required", file=sys.stderr)
             return EXIT_CONFIG_ERROR

@@ -1,8 +1,17 @@
 """Durable-state helpers: atomic writes, checksums, and corruption errors.
 
 All durable stores use these helpers to guarantee that state is written
-atomically (write-temp-fsync-rename) and that reads fail closed when a
+atomically (write-unique-temp-fsync-rename) and that reads fail closed when a
 record is missing, malformed, or fails checksum verification.
+
+Atomic write semantics: each write uses a unique temporary file in the same
+directory as the destination. Concurrent writers therefore last-write-wins
+atomically: every writer fsyncs its own unique temp and atomically renames it
+over the destination with ``os.replace``, so there is never torn state. A crash
+between temp creation and rename leaves a unique stale temp (named
+``<destination>.<random>.tmp``) that never blocks future writes (each
+subsequent write uses a fresh unique name), is never read as destination state,
+and is never deleted by the service (we never remove foreign files).
 """
 
 from __future__ import annotations
@@ -10,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -23,13 +33,23 @@ def checksum_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all of ``data`` to ``fd``, handling partial writes."""
+    view = memoryview(data)
+    total = 0
+    while total < len(view):
+        total += os.write(fd, view[total:])
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write bytes atomically: temp file, fsync, rename, fsync dir."""
+    """Write bytes atomically: unique temp, fsync, atomic rename, fsync dir."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp = Path(tmp_name)
     try:
-        os.write(fd, data)
+        _write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
