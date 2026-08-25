@@ -3,18 +3,19 @@
 Provides in-memory and durable (file-backed) stores that persist candidate-bound
 evidence records. Durable stores copy artifacts into the store directory so that
 artifacts remain available after the original files are gone. Freshness checks
-prevent stale evidence from being used to accept a newer candidate.
+prevent stale evidence from being used to accept a newer candidate. All durable
+writes are atomic and all reads fail closed on corruption.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
 from doom_team.domain import Candidate, Evidence
+from doom_team.durable import atomic_write_json, read_json_checked
 from doom_team.ports import EvidenceStore
 
 
@@ -69,23 +70,18 @@ class DurableEvidenceStore(EvidenceStore):
                 stored_artifacts.append(str(artifact))
         evidence["artifacts"] = stored_artifacts
 
-        with open(self.evidence_dir / f"{evidence_id}.json", "w") as f:
-            json.dump(evidence, f, indent=2, default=str)
+        atomic_write_json(self.evidence_dir / f"{evidence_id}.json", evidence)
         return evidence_id
 
     def load(self, evidence_id: str) -> dict[str, Any]:
-        """Load evidence by id."""
-        with open(self.evidence_dir / f"{evidence_id}.json") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise TypeError(f"Evidence record {evidence_id} is not a dict")
-        return data
+        """Load evidence by id, failing closed on corruption."""
+        return read_json_checked(self.evidence_dir / f"{evidence_id}.json")
 
     def evidence_for_candidate(self, candidate_id: str) -> list[dict[str, Any]]:
         """Return all evidence records bound to the given candidate id."""
         result: list[dict[str, Any]] = []
         for path in self.evidence_dir.glob("*.json"):
-            record = json.loads(path.read_text())
+            record = read_json_checked(path)
             if record.get("candidate_id") == candidate_id:
                 result.append(record)
         return result

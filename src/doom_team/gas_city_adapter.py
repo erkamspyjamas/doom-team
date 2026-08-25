@@ -5,16 +5,17 @@ domain. The adapter talks to a GasCityClient protocol and persists mapping
 between Doom run ids and Gas City run ids in a durable store so that work
 can be recovered after a restart. Enqueue is idempotent: re-submitting with
 the same Doom run id reuses the existing mapping and never duplicates the
-remote run.
+remote run. The mapping store uses atomic writes and fails closed on
+corruption.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from doom_team.durable import atomic_write_json, read_json_checked
 from doom_team.ports import OrchestrationPort
 
 
@@ -68,15 +69,13 @@ class GasCityAdapter(OrchestrationPort):
         self._load_store()
 
     def _load_store(self) -> None:
-        if self._store_path.exists():
-            data = json.loads(self._store_path.read_text())
-            if isinstance(data, dict):
-                self._mapping = {str(k): str(v) for k, v in data.items()}
-            else:
-                self._mapping = {}
+        if not self._store_path.exists():
+            return
+        data = read_json_checked(self._store_path)
+        self._mapping = {str(k): str(v) for k, v in data.items()}
 
     def _persist(self) -> None:
-        self._store_path.write_text(json.dumps(self._mapping, indent=2))
+        atomic_write_json(self._store_path, self._mapping)
 
     def enqueue(
         self,

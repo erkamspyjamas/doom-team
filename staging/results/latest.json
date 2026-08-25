@@ -1,0 +1,21 @@
+{
+  "mode": "fake",
+  "scenarios": [
+    {"name": "clean_startup", "status": "pass", "detail": ""},
+    {"name": "doctor_check", "status": "pass", "detail": ""},
+    {"name": "health_readiness", "status": "pass", "detail": ""},
+    {"name": "gas_city_connection", "status": "pass", "detail": ""},
+    {"name": "inference_request", "status": "pass", "detail": ""},
+    {"name": "mission_lifecycle", "status": "pass", "detail": ""},
+    {"name": "record_approval", "status": "pass", "detail": ""},
+    {"name": "restart_during_work", "status": "pass", "detail": ""},
+    {"name": "inference_provider_outage", "status": "pass", "detail": ""},
+    {"name": "gas_city_outage", "status": "pass", "detail": ""},
+    {"name": "corrupted_state_fails_closed", "status": "pass", "detail": ""},
+    {"name": "backup", "status": "pass", "detail": ""},
+    {"name": "restore", "status": "pass", "detail": ""},
+    {"name": "recovery", "status": "pass", "detail": ""},
+    {"name": "clean_shutdown", "status": "pass", "detail": ""}
+  ],
+  "all_passed": true
+}
