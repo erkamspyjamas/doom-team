@@ -17,9 +17,10 @@ python staging/run_staging.py --base-dir staging/run --output staging/results/la
 ```
 
 The harness runs in **controlled/fake staging mode only** (the default
-`--mode fake`). There is no real-mode connectivity: `--mode real` is rejected
-with a clear error so evidence can never be labeled real. Real external staging
-is not implemented (see [Production Candidate](PRODUCTION_CANDIDATE.md)).
+`--mode fake`). Only `--mode fake` is supported; `--mode real` (or any other
+mode) is rejected with a clear error so evidence can never be labeled real.
+There is no real-mode connectivity. Real external staging is not implemented
+(see [Production Candidate](PRODUCTION_CANDIDATE.md)).
 
 ## Scenarios
 

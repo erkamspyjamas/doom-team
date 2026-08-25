@@ -28,11 +28,12 @@ python -m pip install -e ".[dev]" -c constraints.txt
 python staging/run_staging.py --base-dir staging/run --output staging/results/latest.json
 ```
 
-The harness runs in **controlled/fake staging mode only** (the default
-`--mode fake`). `--mode real` is rejected with a clear error; there is no
-real-mode connectivity and evidence is always labeled `fake`. Real external
-staging is not implemented (see [Staging Evidence](../docs/STAGING_EVIDENCE.md)
-and [Production Candidate](../docs/PRODUCTION_CANDIDATE.md)).
+The harness runs in **controlled/fake staging mode only**. Only `--mode fake`
+is supported; `--mode real` (or any other mode) is rejected with a clear error,
+so evidence can never be labeled real. There is no real-mode connectivity and
+evidence is always labeled `fake`. Real external staging is not implemented
+(see [Staging Evidence](../docs/STAGING_EVIDENCE.md) and [Production
+Candidate](../docs/PRODUCTION_CANDIDATE.md)).
 
 Results are written as JSON to the `--output` path with the mode label and a
 pass/fail status for each scenario.

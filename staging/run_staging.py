@@ -2,8 +2,8 @@
 
 Runs the real service against controlled (fake) dependencies and records
 repo-resident evidence. Mode is labeled in the output report. Only
-controlled/fake staging is supported; `--mode real` is rejected so evidence
-can never be labeled real.
+`--mode fake` is supported; any other mode (including `--mode real`) is
+rejected so evidence can never be labeled real.
 """
 
 from __future__ import annotations
@@ -416,11 +416,16 @@ def main(argv: list[str] | None = None) -> int:
         default="staging/results/latest.json",
         help="Output report path",
     )
-    parser.add_argument("--mode", default="fake", help="Mode label (fake or real)")
+    parser.add_argument(
+        "--mode",
+        default="fake",
+        help="Mode label (only 'fake' is supported; any other mode is rejected)",
+    )
     args = parser.parse_args(argv)
-    if args.mode == "real":
+    if args.mode != "fake":
         print(
-            "STAGING ERROR: --mode real is not supported; only controlled/fake staging (--mode fake) is available",
+            f"STAGING ERROR: only --mode fake is supported; mode {args.mode!r} is rejected "
+            "so evidence can never be labeled real",
             file=sys.stderr,
         )
         return 1
