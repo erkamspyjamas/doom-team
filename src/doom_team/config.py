@@ -28,6 +28,9 @@ _ENV_PREFIX = "DOOM_"
 _DEFAULT_CREDENTIAL_ENV = "DOOM_API_KEY"
 _DEFAULT_RUNTIME = "local"
 _DEFAULT_SEMANTIC_RETRIES = 3
+_DEFAULT_GAS_CITY_URL = ""
+_DEFAULT_GAS_CITY_TIMEOUT = 10.0
+_DEFAULT_GAS_CITY_MAX_RETRIES = 3
 
 _REQUIRED_SETTINGS = ("state_dir", "model_provider", "model_name")
 
@@ -39,6 +42,9 @@ _KNOWN_SETTINGS = frozenset(
         "runtime",
         "semantic_retries",
         "provider_api_key_env",
+        "gas_city_url",
+        "gas_city_timeout",
+        "gas_city_max_retries",
     }
 )
 
@@ -93,6 +99,9 @@ class Settings:
     runtime: str = _DEFAULT_RUNTIME
     semantic_retries: int = _DEFAULT_SEMANTIC_RETRIES
     provider_api_key_env: str = _DEFAULT_CREDENTIAL_ENV
+    gas_city_url: str = _DEFAULT_GAS_CITY_URL
+    gas_city_timeout: float = _DEFAULT_GAS_CITY_TIMEOUT
+    gas_city_max_retries: int = _DEFAULT_GAS_CITY_MAX_RETRIES
     _redactor: Redactor = field(default_factory=Redactor, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -106,6 +115,11 @@ class Settings:
             raise ConfigError("provider_api_key_env is required")
         if self.semantic_retries < 0:
             raise ConfigError("semantic_retries must be non-negative")
+        if self.gas_city_timeout < 0:
+            raise ConfigError("gas_city_timeout must be non-negative")
+        if self.gas_city_max_retries < 0:
+            raise ConfigError("gas_city_max_retries must be non-negative")
+        object.__setattr__(self, "gas_city_url", self.gas_city_url.strip())
 
     def __repr__(self) -> str:
         base = (
@@ -114,7 +128,10 @@ class Settings:
             f"model_name={self.model_name!r}, runtime={self.runtime!r}, "
             f"semantic_retries={self.semantic_retries!r}, "
             f"provider_api_key_env={self.provider_api_key_env!r}, "
-            "provider_api_key=[REDACTED])"
+            f"gas_city_url={self.gas_city_url!r}, "
+            f"gas_city_timeout={self.gas_city_timeout!r}, "
+            f"gas_city_max_retries={self.gas_city_max_retries!r}, "
+            "provider_credential=[REDACTED])"
         )
         return self.redact(base)
 
@@ -135,6 +152,9 @@ class Settings:
             "runtime": self.runtime,
             "semantic_retries": str(self.semantic_retries),
             "provider_api_key_env": self.provider_api_key_env,
+            "gas_city_url": self.gas_city_url,
+            "gas_city_timeout": str(self.gas_city_timeout),
+            "gas_city_max_retries": str(self.gas_city_max_retries),
         }
 
 
@@ -176,6 +196,16 @@ class ConfigLoader:
                 return int(value)
             except (TypeError, ValueError):
                 raise ConfigError(f"setting '{name}' must be an integer") from None
+        if name == "gas_city_timeout":
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                raise ConfigError(f"setting '{name}' must be a number") from None
+        if name == "gas_city_max_retries":
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise ConfigError(f"setting '{name}' must be an integer") from None
         return value
 
     def load(
@@ -187,6 +217,9 @@ class ConfigLoader:
         runtime: str | None = None,
         semantic_retries: int | None = None,
         provider_api_key_env: str | None = None,
+        gas_city_url: str | None = None,
+        gas_city_timeout: float | None = None,
+        gas_city_max_retries: int | None = None,
         config_file: str | Path | None = None,
     ) -> Settings:
         secret_values: list[str] = []
@@ -199,6 +232,9 @@ class ConfigLoader:
             "runtime": _DEFAULT_RUNTIME,
             "semantic_retries": _DEFAULT_SEMANTIC_RETRIES,
             "provider_api_key_env": _DEFAULT_CREDENTIAL_ENV,
+            "gas_city_url": _DEFAULT_GAS_CITY_URL,
+            "gas_city_timeout": _DEFAULT_GAS_CITY_TIMEOUT,
+            "gas_city_max_retries": _DEFAULT_GAS_CITY_MAX_RETRIES,
         }
         merged: dict[str, Any] = dict(defaults)
         merged.update(self._config_file_values(config_file))
@@ -213,6 +249,9 @@ class ConfigLoader:
             "runtime": runtime,
             "semantic_retries": semantic_retries,
             "provider_api_key_env": provider_api_key_env,
+            "gas_city_url": gas_city_url,
+            "gas_city_timeout": gas_city_timeout,
+            "gas_city_max_retries": gas_city_max_retries,
         }
         for name, value in explicit.items():
             if value is not None:
@@ -251,6 +290,13 @@ class ConfigLoader:
             runtime=str(coerced["runtime"]),
             semantic_retries=int(coerced["semantic_retries"]),
             provider_api_key_env=cred_env,
+            gas_city_url=str(coerced.get("gas_city_url", "")),
+            gas_city_timeout=float(
+                coerced.get("gas_city_timeout", _DEFAULT_GAS_CITY_TIMEOUT)
+            ),
+            gas_city_max_retries=int(
+                coerced.get("gas_city_max_retries", _DEFAULT_GAS_CITY_MAX_RETRIES)
+            ),
             _redactor=redactor,
         )
 
@@ -263,6 +309,9 @@ def load_config(
     runtime: str | None = None,
     semantic_retries: int | None = None,
     provider_api_key_env: str | None = None,
+    gas_city_url: str | None = None,
+    gas_city_timeout: float | None = None,
+    gas_city_max_retries: int | None = None,
     config_file: str | Path | None = None,
 ) -> Settings:
     """Load configuration from the process environment."""
@@ -273,5 +322,8 @@ def load_config(
         runtime=runtime,
         semantic_retries=semantic_retries,
         provider_api_key_env=provider_api_key_env,
+        gas_city_url=gas_city_url,
+        gas_city_timeout=gas_city_timeout,
+        gas_city_max_retries=gas_city_max_retries,
         config_file=config_file,
     )
