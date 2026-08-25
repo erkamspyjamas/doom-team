@@ -3,16 +3,19 @@
 Implements OrchestrationPort without leaking Gas City internals into the
 domain. The adapter talks to a GasCityClient protocol and persists mapping
 between Doom run ids and Gas City run ids in a durable store so that work
-can be recovered after a restart.
+can be recovered after a restart. Enqueue is idempotent: re-submitting with
+the same Doom run id reuses the existing mapping and never duplicates the
+remote run. The mapping store uses atomic writes and fails closed on
+corruption.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from doom_team.durable import atomic_write_json, read_json_checked
 from doom_team.ports import OrchestrationPort
 
 
@@ -54,7 +57,8 @@ class GasCityAdapter(OrchestrationPort):
 
     A durable JSON store persists the mapping between Doom run ids and Gas
     City run ids. After a restart, a new adapter instance can load the store
-    and continue observing/recovering the same runs.
+    and continue observing/recovering the same runs. Re-enqueueing with the
+    same Doom run id is a no-op and reuses the existing mapping.
     """
 
     def __init__(self, client: GasCityClient, store_path: str | Path) -> None:
@@ -65,23 +69,36 @@ class GasCityAdapter(OrchestrationPort):
         self._load_store()
 
     def _load_store(self) -> None:
-        if self._store_path.exists():
-            data = json.loads(self._store_path.read_text())
-            if isinstance(data, dict):
-                self._mapping = {str(k): str(v) for k, v in data.items()}
-            else:
-                self._mapping = {}
+        if not self._store_path.exists():
+            return
+        data = read_json_checked(self._store_path)
+        self._mapping = {str(k): str(v) for k, v in data.items()}
 
     def _persist(self) -> None:
-        self._store_path.write_text(json.dumps(self._mapping, indent=2))
+        atomic_write_json(self._store_path, self._mapping)
 
-    def enqueue(self, task: Any, dependencies: tuple[str, ...] = ()) -> str:
-        """Enqueue a task and return a Doom run id."""
+    def enqueue(
+        self,
+        task: Any,
+        dependencies: tuple[str, ...] = (),
+        run_id: str | None = None,
+    ) -> str:
+        """Enqueue a task and return a Doom run id.
+
+        If ``run_id`` is provided and already present in the durable mapping,
+        the existing Doom run id is returned without contacting Gas City,
+        making resubmission after a restart idempotent.
+        """
         if not dependencies:
             task_dependencies = getattr(task, "dependencies", ())
             if isinstance(task_dependencies, (tuple, list)):
                 dependencies = tuple(str(d) for d in task_dependencies)
-        doom_run_id = f"doom_{uuid.uuid4().hex[:8]}"
+        if run_id is None:
+            doom_run_id = f"doom_{uuid.uuid4().hex[:8]}"
+        else:
+            doom_run_id = run_id
+            if doom_run_id in self._mapping:
+                return doom_run_id
         gas_run_id = self._client.enqueue(task, dependencies)
         self._mapping[doom_run_id] = gas_run_id
         self._persist()

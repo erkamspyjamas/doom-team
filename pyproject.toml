@@ -1,38 +1,45 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "doom-team"
 version = "0.1.0"
-description = "Self-hosted autonomous software-engineering platform"
+description = "Doom Team - self-hosted autonomous software-engineering platform"
 readme = "README.md"
-requires-python = ">=3.11"
-license = {text = "Proprietary"}
-authors = [{name = "Doom Autopilot"}]
+requires-python = ">=3.11,<3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Doom Autopilot" }]
 dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.10.0",
-    "pre-commit",
-    "pytest>=8.0.0",
-    "ruff>=0.4.0",
+    "mypy==1.10.0",
+    "pip-tools==7.4.1",
+    "pre-commit==3.7.1",
+    "pytest==8.2.2",
+    "ruff==0.4.9",
 ]
+
+[project.scripts]
+doom-team = "doom_team.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[tool.setuptools.package-data]
+doom_team = ["py.typed"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

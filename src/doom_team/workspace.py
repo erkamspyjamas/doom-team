@@ -3,18 +3,21 @@
 Implements the WorkspacePort and RepositoryPort protocols using a local
 Git repository per workspace. Workspaces are fully independent, snapshots
 are reversible copies, and failed/dirty workspaces can be preserved for
-forensic retention instead of being destroyed.
+forensic retention instead of being destroyed. All Git subprocesses are
+run through the subprocess guard: sanitized environment, argv-only
+(no shell), pre-execution symlink/path checks, and best-effort network
+isolation when supported.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import uuid
 from pathlib import Path
 
 from doom_team.ports import RepositoryPort, WorkspacePort
+from doom_team.subprocess_guard import run_guarded
 
 
 class GitWorkspace(WorkspacePort, RepositoryPort):
@@ -31,10 +34,29 @@ class GitWorkspace(WorkspacePort, RepositoryPort):
         self._preserved: set[str] = set()
 
     def _workspace_path(self, workspace_id: str) -> Path:
-        path = (self.base_dir / workspace_id).resolve()
-        if not path.is_relative_to(self.base_dir):
+        """Resolve the workspace path, rejecting escapes and symlink components."""
+        root = self.base_dir.resolve()
+        candidate = root / workspace_id
+        current = root
+        for part in Path(workspace_id).parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"Workspace {workspace_id} path contains symlink component")
+        path = candidate.resolve()
+        if not path.is_relative_to(root):
             raise ValueError(f"Workspace {workspace_id} escapes base directory")
         return path
+
+    def _assert_no_symlink(self, path: Path) -> None:
+        """Reject the path if any component from the base is a symlink."""
+        root = self.base_dir.resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("Path outside workspace base")
+        current = root
+        for part in path.relative_to(root).parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"Symlink in workspace path: {current}")
 
     def create_workspace(self, task_id: str) -> str:
         """Create an isolated Git repo for a task and return its id."""
@@ -84,12 +106,14 @@ class GitWorkspace(WorkspacePort, RepositoryPort):
     def apply_patch(self, workspace_id: str, patch: bytes) -> None:
         """Apply an exact-file patch to the workspace."""
         path = self._workspace_path(workspace_id)
-        subprocess.run(
+        self._assert_no_symlink(path)
+        run_guarded(
             ["git", "apply", "-"],
             cwd=str(path),
             input=patch,
-            capture_output=True,
             check=True,
+            text=False,
+            capture_output=True,
         )
 
     def baseline_commit(self, workspace_id: str) -> str:
@@ -120,7 +144,6 @@ class GitWorkspace(WorkspacePort, RepositoryPort):
                 full = Path(root) / name
                 if full.is_symlink():
                     target = full.resolve()
-                    # A symlink is an escape if it resolves outside the workspace directory.
                     if not target.is_relative_to(path):
                         return True
         return False
@@ -140,11 +163,12 @@ class GitWorkspace(WorkspacePort, RepositoryPort):
         return workspace_id in self._preserved
 
     def _git(self, path: Path, *args: str) -> str:
-        proc = subprocess.run(
+        self._assert_no_symlink(path)
+        proc = run_guarded(
             ["git", *args],
             cwd=str(path),
-            capture_output=True,
-            text=True,
             check=True,
+            text=True,
+            capture_output=True,
         )
-        return proc.stdout
+        return str(proc.stdout)

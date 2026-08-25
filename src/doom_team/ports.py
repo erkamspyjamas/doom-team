@@ -85,3 +85,9 @@ class OrchestrationPort(Protocol):
 
     def recover(self, run_id: str) -> None:
         """Trigger runtime recovery without touching semantic history."""
+
+
+@runtime_checkable
+class InferencePort(Protocol):
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        """Complete a chat conversation and return the normalized response."""

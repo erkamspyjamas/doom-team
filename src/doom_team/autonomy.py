@@ -4,17 +4,21 @@ Implements planning/next-runnable-work continuation for a mission with
 dependencies. Tasks execute automatically in dependency order with isolated
 workspaces. Human-attention events are recorded only for the root-cause
 failure of a dependency chain; blocked dependents do not record their own
-attention event.
+attention event. Lifecycle events are recorded through an optional durable
+event sink.
 """
 
 from __future__ import annotations
 
 import datetime
+import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 from doom_team.domain import Attempt, Candidate, Evidence, Mission, TaskContract
+from doom_team.observability import Event, EventSink
 from doom_team.ports import InferenceTelemetryPort, RepositoryPort, WorkspacePort
 from doom_team.qa_reviewer import run_validation
 from doom_team.verdicts import Verdict, VerdictStore
@@ -80,6 +84,7 @@ class AutonomousMissionRunner:
         reviewer_verify: Callable[[Candidate, Evidence], tuple[bool, str]],
         model: str = "deepseek-v4",
         runtime: str = "local",
+        event_sink: EventSink | None = None,
     ) -> None:
         self._workspace = workspace_port
         self._repository = repository_port
@@ -90,7 +95,14 @@ class AutonomousMissionRunner:
         self._reviewer_verify = reviewer_verify
         self._model = model
         self._runtime = runtime
+        self._event_sink = event_sink
         self.attention = AttentionTracker()
+
+    def _record(self, kind: str, details: dict[str, object], producer_role: str = "dev") -> None:
+        if self._event_sink is not None:
+            self._event_sink.record(
+                Event(kind=kind, details=details, producer_role=producer_role)
+            )
 
     def run(self, mission: Mission) -> dict[str, TaskOutcome]:
         """Execute all runnable tasks respecting dependencies.
@@ -100,36 +112,40 @@ class AutonomousMissionRunner:
         progress can be made (all tasks complete or a failure blocks the
         remainder).
         """
-        deps: dict[str, set[str]] = {t.id: set(t.dependencies) for t in mission.tasks}
-        completed: set[str] = set()
-        failed: set[str] = set()
-        outcomes: dict[str, TaskOutcome] = {}
+        self._record("MISSION_STARTED", {"mission_id": mission.id, "objective_id": mission.objective.id})
+        try:
+            deps: dict[str, set[str]] = {t.id: set(t.dependencies) for t in mission.tasks}
+            completed: set[str] = set()
+            failed: set[str] = set()
+            outcomes: dict[str, TaskOutcome] = {}
 
-        while True:
-            ready = [
-                t
-                for t in mission.tasks
-                if t.id not in completed
-                and t.id not in failed
-                and deps[t.id].issubset(completed)
-            ]
-            if not ready:
-                if failed or len(completed) == len(mission.tasks):
-                    break
-                raise RuntimeError("Dependency graph stalled; possible cycle")
+            while True:
+                ready = [
+                    t
+                    for t in mission.tasks
+                    if t.id not in completed
+                    and t.id not in failed
+                    and deps[t.id].issubset(completed)
+                ]
+                if not ready:
+                    if failed or len(completed) == len(mission.tasks):
+                        break
+                    raise RuntimeError("Dependency graph stalled; possible cycle")
 
-            # Execute ready tasks. Concurrency is logical; tasks run sequentially
-            # but in dependency-safe order.
-            for task in ready:
-                outcome = self._execute_task(mission, task)
-                outcomes[task.id] = outcome
-                if self._is_success(outcome):
-                    completed.add(task.id)
-                else:
-                    failed.add(task.id)
-                    self.attention.record(task.id, outcome.error or "validation failed")
+                # Execute ready tasks. Concurrency is logical; tasks run sequentially
+                # but in dependency-safe order.
+                for task in ready:
+                    outcome = self._execute_task(mission, task)
+                    outcomes[task.id] = outcome
+                    if self._is_success(outcome):
+                        completed.add(task.id)
+                    else:
+                        failed.add(task.id)
+                        self.attention.record(task.id, outcome.error or "validation failed")
 
-        return outcomes
+            return outcomes
+        finally:
+            self._record("MISSION_COMPLETED", {"mission_id": mission.id})
 
     def _is_success(self, outcome: TaskOutcome) -> bool:
         """Return True only if the task completed with passing QA/Reviewer."""
@@ -144,6 +160,10 @@ class AutonomousMissionRunner:
     def _execute_task(self, mission: Mission, task: TaskContract) -> TaskOutcome:
         """Run one task end-to-end with isolated workspace and evidence."""
         workspace_id = self._workspace.create_workspace(task.id)
+        self._record(
+            "TASK_STARTED",
+            {"task_id": task.id, "workspace_id": workspace_id, "mission_id": mission.id},
+        )
         try:
             baseline_commit = self._repository.baseline_commit(workspace_id)
             candidate_commit = self._runner(task, workspace_id)
@@ -191,6 +211,15 @@ class AutonomousMissionRunner:
                 verify=self._reviewer_verify,
             )
 
+            self._record(
+                "TASK_COMPLETED",
+                {
+                    "task_id": task.id,
+                    "candidate_id": candidate.id,
+                    "candidate_commit": candidate_commit,
+                    "workspace_id": workspace_id,
+                },
+            )
             return TaskOutcome(
                 task_id=task.id,
                 candidate=candidate,
@@ -198,7 +227,11 @@ class AutonomousMissionRunner:
                 qa_verdict=qa_verdict,
                 reviewer_verdict=reviewer_verdict,
             )
-        except Exception as exc:  # pragma: no cover - defensive
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            self._record(
+                "TASK_FAILED",
+                {"task_id": task.id, "workspace_id": workspace_id, "error": str(exc)},
+            )
             return TaskOutcome(
                 task_id=task.id,
                 candidate=None,

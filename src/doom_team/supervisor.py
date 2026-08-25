@@ -8,7 +8,7 @@ evidence and independent verdicts matter.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from doom_team.domain import Candidate, Evidence, SupervisorDecision
 from doom_team.evidence import evidence_is_fresh
@@ -47,6 +47,9 @@ class Supervisor:
 
         if approval_port is None:
             return SupervisorDecision.READY_FOR_FINAL_APPROVAL, "ready for final approval"
-        if approval_port.request_approval("release", {"candidate_id": candidate.id}):
+        if approval_port.request_approval(
+            "release",
+            {"candidate_id": candidate.id, "frontier_sha": candidate.candidate_commit},
+        ):
             return SupervisorDecision.RELEASE_AUTHORIZED, "release authorized"
         return SupervisorDecision.HUMAN_REQUIRED, "human approval required"

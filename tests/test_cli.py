@@ -1,0 +1,298 @@
+"""Tests for the doom-team CLI subcommands."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from doom_team.approval import DurableApprovalPort
+from doom_team.cli import main
+
+
+@pytest.fixture
+def cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Set up a valid environment for CLI commands."""
+    monkeypatch.setenv("DOOM_API_KEY", "secret")
+    monkeypatch.setenv("DOOM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DOOM_MODEL_PROVIDER", "nvidia")
+    monkeypatch.setenv("DOOM_MODEL_NAME", "deepseek-v4")
+    return dict(os.environ)
+
+
+def test_doctor_healthy(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    rc = main(["doctor"])
+    assert rc == 0
+
+
+def test_doctor_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOM_API_KEY", raising=False)
+    monkeypatch.setenv("DOOM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DOOM_MODEL_PROVIDER", "nvidia")
+    monkeypatch.setenv("DOOM_MODEL_NAME", "deepseek-v4")
+    rc = main(["doctor"])
+    assert rc == 1
+
+
+def test_status_reports_state(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    from doom_team.evidence import DurableEvidenceStore
+    from doom_team.verdicts import DurableVerdictStore, Verdict
+
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    ev_store = DurableEvidenceStore(state_dir)
+    ev_store.save(
+        {
+            "id": "ev-1",
+            "candidate_id": "cand-1",
+            "candidate_commit": "abc",
+            "objective_id": "obj-1",
+            "mission_id": "mission-1",
+            "producer_role": "dev",
+            "producer_run": "run-1",
+            "command": "make test",
+            "artifacts": [],
+            "actual_model": "deepseek-v4",
+            "actual_runtime": "local",
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "digest": "sha256:abc",
+        }
+    )
+    verdict_store = DurableVerdictStore(state_dir)
+    verdict_store.save(Verdict(candidate_id="cand-1", role="QA", decision=True))
+
+    rc = main(["status"])
+    assert rc == 0
+
+
+def test_approve_records_approval(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "abc123",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "approve",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "abc123"}) is True
+
+
+def test_approve_deny_never_authorizes(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "abc123",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "deny",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "abc123"}) is False
+
+
+def test_approve_true_false_spellings(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "sha1",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "true",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "sha1"}) is True
+
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "sha2",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "false",
+        ]
+    )
+    assert rc == 0
+    assert port.request_approval("release", {"frontier_sha": "sha2"}) is False
+
+
+def test_approve_invalid_decision_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "approve",
+                "--action",
+                "release",
+                "--frontier-sha",
+                "abc123",
+                "--operator",
+                "ops-1",
+                "--decision",
+                "maybe",
+            ]
+        )
+    assert excinfo.value.code == 2
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    assert list((state_dir / "approvals").glob("*.json")) == []
+
+
+def test_approve_missing_decision_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "approve",
+                "--action",
+                "release",
+                "--frontier-sha",
+                "abc123",
+                "--operator",
+                "ops-1",
+            ]
+        )
+    assert excinfo.value.code == 2
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    assert list((state_dir / "approvals").glob("*.json")) == []
+
+
+def test_approve_stale_frontier_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    port = DurableApprovalPort(state_dir, contract_revision="contract-1")
+    port.approve("release", "abc123", "ops-1", decision=True, contract_revision="contract-0")
+    assert port.request_approval("release", {"frontier_sha": "abc123"}) is False
+
+
+def test_approve_mismatched_frontier_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "abc123",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "approve",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "other"}) is False
+
+
+def test_approve_missing_required_args(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(["approve", "--action", "release"])
+    assert excinfo.value.code == 2  # argparse error exit
+
+
+def test_backup_documented_command(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    from doom_team.evidence import DurableEvidenceStore
+
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    DurableEvidenceStore(state_dir)
+    backup_dir = tmp_path / "backups"
+    rc = main(["backup", "--state-dir", str(state_dir), "--backup-dir", str(backup_dir)])
+    assert rc == 0
+    assert any(backup_dir.iterdir())
+
+
+def test_restore_documented_command(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    from doom_team.evidence import DurableEvidenceStore
+
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    DurableEvidenceStore(state_dir)
+    backup_dir = tmp_path / "backups"
+    rc = main(["backup", "--state-dir", str(state_dir), "--backup-dir", str(backup_dir)])
+    assert rc == 0
+    backup_path = next(backup_dir.iterdir())
+    rc = main(["restore", "--state-dir", str(state_dir), "--backup-path", str(backup_path)])
+    assert rc == 0
+    assert (state_dir / "evidence").is_dir()
+
+
+def test_restore_corrupt_backup_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    bad_backup = tmp_path / "bad-backup"
+    bad_backup.mkdir()
+    (bad_backup / "random.txt").write_text("data")
+    rc = main(["restore", "--state-dir", str(state_dir), "--backup-path", str(bad_backup)])
+    assert rc == 2  # EXIT_STATE_ERROR
+
+
+def test_serve_graceful_shutdown_and_restart_safe(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    """Serve starts, initializes state, and shuts down gracefully on SIGTERM."""
+    env = dict(cli_env)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "from doom_team.cli import main; main()", "serve"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        # Wait for readiness
+        assert proc.stdout is not None
+        line = proc.stdout.readline().strip()
+        assert line == "Doom Team service ready"
+        # State dirs were created
+        state_dir = Path(env["DOOM_STATE_DIR"])
+        assert (state_dir / "evidence").is_dir()
+        assert (state_dir / "verdicts").is_dir()
+        # Graceful shutdown
+        proc.send_signal(subprocess.signal.SIGTERM)
+        proc.wait(timeout=5)
+        assert proc.returncode == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    # Restart-safe: second start should succeed and not error
+    proc2 = subprocess.Popen(
+        [sys.executable, "-c", "from doom_team.cli import main; main()", "serve"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert proc2.stdout is not None
+        line = proc2.stdout.readline().strip()
+        assert line == "Doom Team service ready"
+        proc2.send_signal(subprocess.signal.SIGINT)
+        proc2.wait(timeout=5)
+        assert proc2.returncode == 0
+    finally:
+        if proc2.poll() is None:
+            proc2.kill()
+            proc2.wait()

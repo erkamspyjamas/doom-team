@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Callable
+from collections.abc import Callable
 
 from doom_team.domain import Candidate, Evidence
 from doom_team.evidence import evidence_is_fresh
