@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.9
+    hooks:
+      - id: ruff
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        args: [src]
+  - repo: https://github.com/pycqa/pytest
+    rev: 8.2.2
+    hooks:
+      - id: pytest
+        additional_dependencies: [pytest]
