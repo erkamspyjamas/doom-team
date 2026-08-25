@@ -22,6 +22,15 @@ class AcceptanceState(Enum):
     RELEASE_AUTHORIZED = "RELEASE_AUTHORIZED"
 
 
+class SupervisorDecision(Enum):
+    """Explicit terminal decisions from the deterministic Supervisor."""
+
+    BLOCKED = "BLOCKED"
+    READY_FOR_FINAL_APPROVAL = "READY_FOR_FINAL_APPROVAL"
+    RELEASE_AUTHORIZED = "RELEASE_AUTHORIZED"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
 @dataclass(frozen=True)
 class Objective:
     id: str
