@@ -60,20 +60,27 @@ class GasCityAdapter(OrchestrationPort):
     def __init__(self, client: GasCityClient, store_path: str | Path) -> None:
         self._client = client
         self._store_path = Path(store_path)
+        self._mapping: dict[str, str] = {}
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         self._load_store()
 
     def _load_store(self) -> None:
         if self._store_path.exists():
-            self._mapping = json.loads(self._store_path.read_text())
-        else:
-            self._mapping: dict[str, str] = {}
+            data = json.loads(self._store_path.read_text())
+            if isinstance(data, dict):
+                self._mapping = {str(k): str(v) for k, v in data.items()}
+            else:
+                self._mapping = {}
 
     def _persist(self) -> None:
         self._store_path.write_text(json.dumps(self._mapping, indent=2))
 
     def enqueue(self, task: Any, dependencies: tuple[str, ...] = ()) -> str:
         """Enqueue a task and return a Doom run id."""
+        if not dependencies:
+            task_dependencies = getattr(task, "dependencies", ())
+            if isinstance(task_dependencies, (tuple, list)):
+                dependencies = tuple(str(d) for d in task_dependencies)
         doom_run_id = f"doom_{uuid.uuid4().hex[:8]}"
         gas_run_id = self._client.enqueue(task, dependencies)
         self._mapping[doom_run_id] = gas_run_id
@@ -84,8 +91,13 @@ class GasCityAdapter(OrchestrationPort):
         """Observe the current state of a run, mapping to Gas City."""
         gas_run_id = self._mapping[run_id]
         gas_state = self._client.observe(gas_run_id)
-        dependencies = getattr(gas_state, "dependencies", ())
-        return RunState(run_id=run_id, status=gas_state.status, dependencies=tuple(dependencies))
+        if isinstance(gas_state, dict):
+            status = gas_state.get("status", "")
+            dependencies = gas_state.get("dependencies", ())
+        else:
+            status = getattr(gas_state, "status", "")
+            dependencies = getattr(gas_state, "dependencies", ())
+        return RunState(run_id=run_id, status=status, dependencies=tuple(dependencies))
 
     def is_runtime_failure(self, run_id: str) -> bool:
         """Delegate runtime-failure detection to Gas City."""

@@ -9,9 +9,7 @@ from doom_team.domain import (
     Attempt,
     Candidate,
     Evidence,
-    Objective,
     RecoveryEpoch,
-    TaskContract,
 )
 
 
@@ -43,13 +41,6 @@ def test_approval_boundary_forwards_to_port() -> None:
 
 
 def test_evidence_has_required_fields() -> None:
-    objective = Objective(id="obj-1", description="Build foundation")
-    task = TaskContract(
-        id="task-1",
-        objective_id="obj-1",
-        instruction="Bootstrap",
-        acceptance_criteria=("c1",),
-    )
     attempt = Attempt(id="attempt-1", task_id="task-1")
     candidate = Candidate(
         id="cand-1",

@@ -106,4 +106,7 @@ class DurableVerdictStore:
         return verdict_id
 
     def load(self, verdict_id: str) -> dict[str, Any]:
-        return json.loads((self.base_dir / f"{verdict_id}.json").read_text())
+        data = json.loads((self.base_dir / f"{verdict_id}.json").read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"Verdict record {verdict_id} is not a dict")
+        return data

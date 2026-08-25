@@ -26,7 +26,7 @@ class InMemoryEvidenceStore(EvidenceStore):
 
     def save(self, evidence: dict[str, Any]) -> str:
         """Persist evidence and return its id."""
-        evidence_id = evidence.get("id", "")
+        evidence_id = str(evidence.get("id", ""))
         if not evidence_id:
             evidence_id = f"ev_{len(self._records)}"
             evidence = {**evidence, "id": evidence_id}
@@ -50,7 +50,7 @@ class DurableEvidenceStore(EvidenceStore):
 
     def save(self, evidence: dict[str, Any]) -> str:
         """Persist evidence, copying any artifact files into the store, and return its id."""
-        evidence_id = evidence.get("id", "")
+        evidence_id = str(evidence.get("id", ""))
         if not evidence_id:
             evidence_id = f"ev_{uuid.uuid4().hex[:8]}"
             evidence = {**evidence, "id": evidence_id}
@@ -76,7 +76,10 @@ class DurableEvidenceStore(EvidenceStore):
     def load(self, evidence_id: str) -> dict[str, Any]:
         """Load evidence by id."""
         with open(self.evidence_dir / f"{evidence_id}.json") as f:
-            return json.load(f)
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Evidence record {evidence_id} is not a dict")
+        return data
 
     def evidence_for_candidate(self, candidate_id: str) -> list[dict[str, Any]]:
         """Return all evidence records bound to the given candidate id."""

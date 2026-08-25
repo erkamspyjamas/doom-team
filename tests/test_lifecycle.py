@@ -11,9 +11,19 @@ from doom_team.verdicts import DurableVerdictStore, InMemoryVerdictStore
 from doom_team.workspace import GitWorkspace
 
 
-def _make_candidate_and_evidence(ws: GitWorkspace, task_id: str = "task-1") -> tuple[Candidate, Evidence]:
+def _make_candidate_and_evidence(
+    ws: GitWorkspace, task_id: str = "task-1", content: bytes = b"+content\n"
+) -> tuple[Candidate, Evidence]:
     workspace_id = ws.create_workspace(task_id)
-    patch = b"diff --git a/file.txt b/file.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+content\n"
+    patch = (
+        b"diff --git a/file.txt b/file.txt\n"
+        b"new file mode 100644\n"
+        b"index 0000000..e69de29\n"
+        b"--- /dev/null\n"
+        b"+++ b/file.txt\n"
+        b"@@ -0,0 +1 @@\n"
+        + content
+    )
     ws.apply_patch(workspace_id, patch)
     candidate_commit = ws.commit(workspace_id, "candidate")
     baseline_commit = ws.baseline_commit(workspace_id)
@@ -87,7 +97,9 @@ def test_lifecycle_rejects_stale_evidence(tmp_path: Path) -> None:
 
     # Create a second candidate with a different commit to make evidence stale
     other_ws = GitWorkspace(tmp_path / "other_workspaces")
-    other_candidate, _ = _make_candidate_and_evidence(other_ws, task_id="task-2")
+    other_candidate, _ = _make_candidate_and_evidence(
+        other_ws, task_id="task-2", content=b"+different\n"
+    )
     stale_evidence = Evidence(
         id="ev-stale",
         candidate=other_candidate,

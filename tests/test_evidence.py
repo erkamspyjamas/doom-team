@@ -7,7 +7,6 @@ from doom_team.domain import Attempt, Candidate, Evidence, Objective, TaskContra
 from doom_team.evidence import DurableEvidenceStore, evidence_is_fresh
 from doom_team.telemetry import InMemoryTelemetry
 
-
 OBJECTIVE = Objective(id="obj-1", description="Build foundation")
 TASK = TaskContract(
     id="task-1",

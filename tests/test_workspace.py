@@ -16,7 +16,15 @@ def workspace_factory(tmp_path: Path) -> GitWorkspace:
 def test_parallel_workspaces_isolated(workspace_factory: GitWorkspace) -> None:
     ws1 = workspace_factory.create_workspace("task-1")
     ws2 = workspace_factory.create_workspace("task-1")
-    patch = b"diff --git a/file.txt b/file.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+hello\n"
+    patch = (
+        b"diff --git a/file.txt b/file.txt\n"
+        b"new file mode 100644\n"
+        b"index 0000000..e69de29\n"
+        b"--- /dev/null\n"
+        b"+++ b/file.txt\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+hello\n"
+    )
     workspace_factory.apply_patch(ws1, patch)
     ws2_path = workspace_factory._workspace_path(ws2)
     assert not (ws2_path / "file.txt").exists()
@@ -26,7 +34,15 @@ def test_parallel_workspaces_isolated(workspace_factory: GitWorkspace) -> None:
 
 def test_dirty_failed_workspace_preserved(workspace_factory: GitWorkspace) -> None:
     ws = workspace_factory.create_workspace("task-1")
-    patch = b"diff --git a/file.txt b/file.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+uncommitted\n"
+    patch = (
+        b"diff --git a/file.txt b/file.txt\n"
+        b"new file mode 100644\n"
+        b"index 0000000..e69de29\n"
+        b"--- /dev/null\n"
+        b"+++ b/file.txt\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+uncommitted\n"
+    )
     workspace_factory.apply_patch(ws, patch)
     workspace_factory.preserve(ws)
     workspace_factory.destroy(ws)
@@ -38,7 +54,15 @@ def test_dirty_failed_workspace_preserved(workspace_factory: GitWorkspace) -> No
 def test_candidate_identity_recorded(workspace_factory: GitWorkspace) -> None:
     ws = workspace_factory.create_workspace("task-1")
     baseline = workspace_factory.baseline_commit(ws)
-    patch = b"diff --git a/feature.txt b/feature.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/feature.txt\n@@ -0,0 +1 @@\n+work\n"
+    patch = (
+        b"diff --git a/feature.txt b/feature.txt\n"
+        b"new file mode 100644\n"
+        b"index 0000000..e69de29\n"
+        b"--- /dev/null\n"
+        b"+++ b/feature.txt\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+work\n"
+    )
     workspace_factory.apply_patch(ws, patch)
     candidate = workspace_factory.commit(ws, "feature")
     store = InMemoryEvidenceStore()
@@ -58,7 +82,6 @@ def test_candidate_identity_recorded(workspace_factory: GitWorkspace) -> None:
 
 
 def test_destructive_git_denied(workspace_factory: GitWorkspace) -> None:
-    ws = workspace_factory.create_workspace("task-1")
     # The adapter must not expose destructive git operations.
     assert not hasattr(workspace_factory, "reset")
     assert not hasattr(workspace_factory, "push")
@@ -78,7 +101,15 @@ def test_escape_check_detects_symlink_outside(workspace_factory: GitWorkspace) -
 def test_snapshot_restore_reverts_changes(workspace_factory: GitWorkspace) -> None:
     ws = workspace_factory.create_workspace("task-1")
     snap = workspace_factory.snapshot(ws)
-    patch = b"diff --git a/change.txt b/change.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/change.txt\n@@ -0,0 +1 @@\n+added\n"
+    patch = (
+        b"diff --git a/change.txt b/change.txt\n"
+        b"new file mode 100644\n"
+        b"index 0000000..e69de29\n"
+        b"--- /dev/null\n"
+        b"+++ b/change.txt\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+added\n"
+    )
     workspace_factory.apply_patch(ws, patch)
     workspace_factory.restore(ws, snap)
     ws_path = workspace_factory._workspace_path(ws)
