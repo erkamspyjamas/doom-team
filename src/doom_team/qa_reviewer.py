@@ -10,31 +10,12 @@ from __future__ import annotations
 
 import datetime
 import json
-from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Callable
 
 from doom_team.domain import Candidate, Evidence
-
-
-@dataclass(frozen=True)
-class Verdict:
-    """Structured outcome of a QA or Reviewer validation."""
-
-    role: str
-    candidate_id: str
-    passed: bool
-    message: str
-    producer_run: str
-    timestamp: datetime.datetime
-
-
-class VerdictStore(Protocol):
-    def save(self, verdict: dict[str, Any]) -> str:
-        """Persist a verdict and return its id."""
-
-    def load(self, verdict_id: str) -> dict[str, Any]:
-        """Load a verdict by id."""
+from doom_team.verdicts import Verdict, VerdictStore
 
 
 def run_validation(
@@ -59,34 +40,25 @@ def run_validation(
         evidence.candidate.id != candidate.id
         or evidence.candidate.candidate_commit != candidate.candidate_commit
     ):
-        return Verdict(
-            role=role,
+        verdict = Verdict(
             candidate_id=candidate.id,
-            passed=False,
-            message="Evidence is not bound to this candidate",
-            producer_run=producer_run,
+            role=role,
+            decision=False,
+            reason="Evidence is not bound to this candidate",
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
+        verdict_store.save(verdict)
+        return verdict
 
     passed, message = verify(candidate, evidence)
     verdict = Verdict(
-        role=role,
         candidate_id=candidate.id,
-        passed=passed,
-        message=message,
-        producer_run=producer_run,
+        role=role,
+        decision=passed,
+        reason=message,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    verdict_store.save(
-        {
-            "role": verdict.role,
-            "candidate_id": verdict.candidate_id,
-            "passed": verdict.passed,
-            "message": verdict.message,
-            "producer_run": verdict.producer_run,
-            "timestamp": verdict.timestamp.isoformat(),
-        }
-    )
+    verdict_store.save(verdict)
     return verdict
 
 
@@ -97,16 +69,16 @@ class DurableVerdictStore:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, verdict: dict[str, Any]) -> str:
-        verdict_id = verdict.get("id") or f"verdict_{len(list(self.base_dir.glob('*.json')))}"
-        verdict = {**verdict, "id": verdict_id}
+    def save(self, verdict: Verdict) -> str:
+        timestamp = datetime.datetime.now().timestamp()
+        verdict_id = f"verdict_{timestamp:.0f}_{hash(verdict) & 0xffffff:06x}"
         (self.base_dir / f"{verdict_id}.json").write_text(
-            json.dumps(verdict, indent=2, default=str)
+            json.dumps(asdict(verdict), indent=2, default=str)
         )
         return verdict_id
 
-    def load(self, verdict_id: str) -> dict[str, Any]:
+    def load(self, verdict_id: str) -> Verdict:
         data = json.loads((self.base_dir / f"{verdict_id}.json").read_text())
         if not isinstance(data, dict):
             raise ValueError(f"Verdict record {verdict_id} is not a dict")
-        return data
+        return Verdict(**data)
