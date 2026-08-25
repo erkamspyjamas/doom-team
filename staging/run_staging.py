@@ -1,7 +1,9 @@
 """Staging end-to-end verification harness for Doom Team.
 
 Runs the real service against controlled (fake) dependencies and records
-repo-resident evidence. Mode is labeled in the output report.
+repo-resident evidence. Mode is labeled in the output report. Only
+controlled/fake staging is supported; `--mode real` is rejected so evidence
+can never be labeled real.
 """
 
 from __future__ import annotations
@@ -416,6 +418,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--mode", default="fake", help="Mode label (fake or real)")
     args = parser.parse_args(argv)
+    if args.mode == "real":
+        print(
+            "STAGING ERROR: --mode real is not supported; only controlled/fake staging (--mode fake) is available",
+            file=sys.stderr,
+        )
+        return 1
     base = Path(args.base_dir)
     harness = StagingHarness(base, mode=args.mode)
     try:

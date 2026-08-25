@@ -12,4 +12,4 @@
 | Unsandboxed execution of model-authored code | Arbitrary code with worker privileges | Mitigation: sanitized child environments (credentials stripped), argv-only subprocess execution, pre-execution path/symlink checks, network isolation via `unshare --net` when supported. Residual: no OS/container sandbox; arbitrary user callables not covered; network isolation may be unavailable; TOCTOU window remains. |
 | Post-hoc-only escape detection | Escape not prevented in time | Mitigation: pre-execution symlink component checks added. Residual: TOCTOU window, hard links, already-executed side effects. |
 | No evidence-at-rest integrity verification | Tampered evidence undetected | Residual risk: digest is self-asserted; no signing/MAC. |
-| In-memory-only telemetry | Route records lost on restart | Residual risk: durable telemetry not implemented. |
+| Telemetry persistence | Route records lost on restart if only the in-memory adapter is used | Mitigated: `DurableTelemetry` records `PROVIDER_ROUTE` events to the durable event log; the in-memory adapter is test-only. |

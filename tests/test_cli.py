@@ -78,6 +78,8 @@ def test_approve_records_approval(tmp_path: Path, cli_env: dict[str, str]) -> No
             "abc123",
             "--operator",
             "ops-1",
+            "--decision",
+            "approve",
         ]
     )
     assert rc == 0
@@ -85,10 +87,166 @@ def test_approve_records_approval(tmp_path: Path, cli_env: dict[str, str]) -> No
     assert port.request_approval("release", {"frontier_sha": "abc123"}) is True
 
 
+def test_approve_deny_never_authorizes(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "abc123",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "deny",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "abc123"}) is False
+
+
+def test_approve_true_false_spellings(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "sha1",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "true",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "sha1"}) is True
+
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "sha2",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "false",
+        ]
+    )
+    assert rc == 0
+    assert port.request_approval("release", {"frontier_sha": "sha2"}) is False
+
+
+def test_approve_invalid_decision_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "approve",
+                "--action",
+                "release",
+                "--frontier-sha",
+                "abc123",
+                "--operator",
+                "ops-1",
+                "--decision",
+                "maybe",
+            ]
+        )
+    assert excinfo.value.code == 2
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    assert list((state_dir / "approvals").glob("*.json")) == []
+
+
+def test_approve_missing_decision_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "approve",
+                "--action",
+                "release",
+                "--frontier-sha",
+                "abc123",
+                "--operator",
+                "ops-1",
+            ]
+        )
+    assert excinfo.value.code == 2
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    assert list((state_dir / "approvals").glob("*.json")) == []
+
+
+def test_approve_stale_frontier_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    port = DurableApprovalPort(state_dir, contract_revision="contract-1")
+    port.approve("release", "abc123", "ops-1", decision=True, contract_revision="contract-0")
+    assert port.request_approval("release", {"frontier_sha": "abc123"}) is False
+
+
+def test_approve_mismatched_frontier_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    rc = main(
+        [
+            "approve",
+            "--action",
+            "release",
+            "--frontier-sha",
+            "abc123",
+            "--operator",
+            "ops-1",
+            "--decision",
+            "approve",
+        ]
+    )
+    assert rc == 0
+    port = DurableApprovalPort(state_dir)
+    assert port.request_approval("release", {"frontier_sha": "other"}) is False
+
+
 def test_approve_missing_required_args(tmp_path: Path, cli_env: dict[str, str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(["approve", "--action", "release"])
     assert excinfo.value.code == 2  # argparse error exit
+
+
+def test_backup_documented_command(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    from doom_team.evidence import DurableEvidenceStore
+
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    DurableEvidenceStore(state_dir)
+    backup_dir = tmp_path / "backups"
+    rc = main(["backup", "--state-dir", str(state_dir), "--backup-dir", str(backup_dir)])
+    assert rc == 0
+    assert any(backup_dir.iterdir())
+
+
+def test_restore_documented_command(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    from doom_team.evidence import DurableEvidenceStore
+
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    DurableEvidenceStore(state_dir)
+    backup_dir = tmp_path / "backups"
+    rc = main(["backup", "--state-dir", str(state_dir), "--backup-dir", str(backup_dir)])
+    assert rc == 0
+    backup_path = next(backup_dir.iterdir())
+    rc = main(["restore", "--state-dir", str(state_dir), "--backup-path", str(backup_path)])
+    assert rc == 0
+    assert (state_dir / "evidence").is_dir()
+
+
+def test_restore_corrupt_backup_fails_closed(tmp_path: Path, cli_env: dict[str, str]) -> None:
+    state_dir = Path(os.environ["DOOM_STATE_DIR"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    bad_backup = tmp_path / "bad-backup"
+    bad_backup.mkdir()
+    (bad_backup / "random.txt").write_text("data")
+    rc = main(["restore", "--state-dir", str(state_dir), "--backup-path", str(bad_backup)])
+    assert rc == 2  # EXIT_STATE_ERROR
 
 
 def test_serve_graceful_shutdown_and_restart_safe(tmp_path: Path, cli_env: dict[str, str]) -> None:

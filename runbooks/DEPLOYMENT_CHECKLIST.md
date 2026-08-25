@@ -5,12 +5,26 @@ service candidate.
 
 ## Status
 
-**DEPLOY_READY = YES** — the documented conclusion of this candidate.
-
 **IMPORTANT**: This checklist documents readiness only. **No deployment, push,
 merge, or production mutation has been performed, and the autonomous path never
 performs them.** Deployment is a human-only operation that requires a positive
 approval through the `ApprovalPort`.
+
+Explicit readiness levels:
+
+- **IMPLEMENTATION_READY = YES** — all Phase 2 tasks accepted; `make lint`,
+  `make type`, `make test` green in a clean environment.
+- **MERGE_READY = PENDING HUMAN APPROVAL** — merging requires a positive human
+  approval through the `ApprovalPort`.
+- **REAL_STAGING_READY = NO** — `serve` does not wire real adapters, no real
+  endpoint configuration exists, and no real staging mode is available (only
+  controlled/fake staging is verified; see
+  [Staging Evidence](../docs/STAGING_EVIDENCE.md)).
+- **DEPLOY_READY = NO** — requires genuine external staging and the human
+  deployment prerequisites below.
+
+Unchecked items below do not imply readiness; readiness is granted only by the
+explicit levels above.
 
 ## Readiness Items
 

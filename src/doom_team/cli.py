@@ -60,7 +60,10 @@ def _build_parser() -> argparse.ArgumentParser:
     approve_parser.add_argument("--frontier-sha", required=True, help="Frontier SHA")
     approve_parser.add_argument("--operator", required=True, help="Operator identity")
     approve_parser.add_argument(
-        "--decision", type=bool, default=True, help="Approval decision (default true)"
+        "--decision",
+        required=True,
+        choices=["approve", "deny", "true", "false"],
+        help="Approval decision (approve|deny|true|false)",
     )
     approve_parser.add_argument("--contract-revision", default=None)
     approve_parser.add_argument("--roadmap-revision", default=None)
@@ -69,11 +72,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "backup", help="Create a verified snapshot of durable state"
     )
     backup_parser.add_argument("--backup-dir", required=True, help="Backup destination root")
+    backup_parser.add_argument("--state-dir", help="Override the durable state directory")
 
     restore_parser = subparsers.add_parser(
         "restore", help="Restore durable state from a verified backup"
     )
     restore_parser.add_argument("--backup-path", required=True, help="Path to a backup")
+    restore_parser.add_argument("--state-dir", help="Override the durable state directory")
 
     return parser
 
@@ -199,12 +204,13 @@ def _cmd_doctor(settings: Settings) -> int:
 def _cmd_approve(settings: Settings, args: argparse.Namespace) -> int:
     """Record a human approval via the durable ApprovalPort. Never deploys."""
     port = DurableApprovalPort(settings.state_dir, event_sink=_make_event_sink(settings))
+    decision = args.decision in ("approve", "true")
     try:
         digest = port.approve(
             args.action,
             args.frontier_sha,
             args.operator,
-            decision=args.decision,
+            decision=decision,
             contract_revision=args.contract_revision,
             roadmap_revision=args.roadmap_revision,
         )

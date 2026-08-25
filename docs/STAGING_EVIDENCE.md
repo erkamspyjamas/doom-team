@@ -16,9 +16,10 @@ python -m pip install -e ".[dev]" -c constraints.txt
 python staging/run_staging.py --base-dir staging/run --output staging/results/latest.json
 ```
 
-The harness defaults to `--mode fake`. To run against real dedicated
-non-production endpoints, set `--mode real` and provide the real configuration
-via `DOOM_*` environment variables (never commit credentials).
+The harness runs in **controlled/fake staging mode only** (the default
+`--mode fake`). There is no real-mode connectivity: `--mode real` is rejected
+with a clear error so evidence can never be labeled real. Real external staging
+is not implemented (see [Production Candidate](PRODUCTION_CANDIDATE.md)).
 
 ## Scenarios
 
@@ -44,4 +45,4 @@ via `DOOM_*` environment variables (never commit credentials).
 
 `staging/results/latest.json` reports all 15 scenarios as `pass` with
 `all_passed: true` in `fake` mode. Evidence produced by the harness is
-repo-resident and mode-labeled so it can be audited.
+repo-resident and mode-labeled (`fake`) so it can be audited.
