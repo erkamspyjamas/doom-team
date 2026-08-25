@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import datetime
-import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from doom_team.durable import atomic_write_json, read_json_checked
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ class InMemoryVerdictStore(VerdictStore):
 
 
 class DurableVerdictStore(VerdictStore):
-    """File-backed verdict store that writes JSON records."""
+    """File-backed verdict store that writes JSON records atomically with checksums."""
 
     def __init__(self, base_dir: str | Path) -> None:
         self.base_dir = Path(base_dir)
@@ -61,11 +62,9 @@ class DurableVerdictStore(VerdictStore):
 
     def save(self, verdict: Verdict) -> str:
         verdict_id = f"verdict_{uuid.uuid4().hex[:8]}"
-        with open(self.verdict_dir / f"{verdict_id}.json", "w") as f:
-            json.dump(asdict(verdict), f, default=str, indent=2)
+        atomic_write_json(self.verdict_dir / f"{verdict_id}.json", asdict(verdict))
         return verdict_id
 
     def load(self, verdict_id: str) -> Verdict:
-        with open(self.verdict_dir / f"{verdict_id}.json") as f:
-            data = json.load(f)
+        data = read_json_checked(self.verdict_dir / f"{verdict_id}.json")
         return Verdict(**data)

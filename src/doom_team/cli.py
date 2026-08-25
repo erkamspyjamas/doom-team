@@ -1,6 +1,6 @@
 """Command-line interface for the Doom Team service.
 
-Provides subcommands: serve, status, doctor, approve.
+Provides subcommands: serve, status, doctor, approve, backup, restore.
 
 Exit codes (documented in docs/CLI.md):
     0 - success / healthy
@@ -12,12 +12,15 @@ Exit codes (documented in docs/CLI.md):
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import threading
 from collections.abc import Sequence
+from pathlib import Path
 
 from doom_team.approval import DurableApprovalPort
+from doom_team.backup import backup_state, restore_state
 from doom_team.config import ConfigError, ConfigLoader, Settings
 from doom_team.evidence import DurableEvidenceStore
 from doom_team.verdicts import DurableVerdictStore
@@ -54,6 +57,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     approve_parser.add_argument("--contract-revision", default=None)
     approve_parser.add_argument("--roadmap-revision", default=None)
+
+    backup_parser = subparsers.add_parser(
+        "backup", help="Create a verified snapshot of durable state"
+    )
+    backup_parser.add_argument("--backup-dir", required=True, help="Backup destination root")
+
+    restore_parser = subparsers.add_parser(
+        "restore", help="Restore durable state from a verified backup"
+    )
+    restore_parser.add_argument("--backup-path", required=True, help="Path to a backup")
 
     return parser
 
@@ -160,10 +173,42 @@ def _cmd_approve(settings: Settings, args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
+def _cmd_backup(state_dir: Path, backup_dir: Path) -> int:
+    """Create a verified backup of durable state."""
+    try:
+        backup_path = backup_state(state_dir, backup_dir)
+    except Exception as exc:  # StateCorruptionError, OSError
+        print(f"backup: failed: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    print(f"backup created and verified: {backup_path}")
+    return EXIT_SUCCESS
+
+
+def _cmd_restore(backup_path: Path, state_dir: Path) -> int:
+    """Restore durable state from a verified backup."""
+    try:
+        restore_state(backup_path, state_dir)
+    except Exception as exc:  # StateCorruptionError, OSError
+        print(f"restore: failed: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    print(f"restore complete from {backup_path}")
+    return EXIT_SUCCESS
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the doom-team console script."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command in ("backup", "restore"):
+        state_dir = args.state_dir or os.environ.get("DOOM_STATE_DIR")
+        if not state_dir:
+            print("configuration error: state_dir is required", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+        if args.command == "backup":
+            return _cmd_backup(Path(state_dir), Path(args.backup_dir))
+        return _cmd_restore(Path(args.backup_path), Path(state_dir))
+
     try:
         settings = _load_settings(args)
     except ConfigError as exc:

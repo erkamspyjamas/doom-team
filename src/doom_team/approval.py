@@ -2,7 +2,8 @@
 
 Approval records are stored on disk as JSON, bound to the exact frontier
 SHA and the current Project Contract / Roadmap revisions. Verification
-fails closed on any stale, missing, mismatched, or corrupt record.
+fails closed on any stale, missing, mismatched, or corrupt record. Writes
+are atomic and fsynced.
 """
 
 from __future__ import annotations
@@ -10,11 +11,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from doom_team.durable import atomic_write_text
 from doom_team.ports import ApprovalPort
 
 
@@ -110,9 +111,7 @@ class DurableApprovalPort(ApprovalPort):
         digest = _digest(payload)
         payload["digest"] = digest
         path = self._path(action, frontier_sha)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        os.replace(tmp, path)
+        atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
         return digest
 
     def load(self, action: str, frontier_sha: str) -> ApprovalRecord:

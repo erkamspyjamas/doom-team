@@ -3,17 +3,18 @@
 Recovery is separate from runtime retries. Runtime failures (timeout, 429,
 503, session crash) never consume the semantic budget. Only semantic blockers
 (QA/Reviewer rejection, repeated acceptance failure, no-progress) consume
-retries. The exhaustion state is persisted so it survives a restart.
+retries. The exhaustion state is persisted atomically and fails closed on
+corruption so it survives a restart without ever being silently reset.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from doom_team.domain import Attempt, RecoveryEpoch
+from doom_team.durable import atomic_write_json, read_json_checked
 
 
 class SemanticBlockedError(Exception):
@@ -51,43 +52,45 @@ class RecoveryState:
 class RecoveryController:
     """Bounded semantic recovery with durable exhaustion.
 
-    The controller persists its state to a JSON file so that exhaustion
-    survives process restarts. Runtime retries are recorded separately and
-    never decrement the semantic budget.
+    The controller persists its state to a JSON file with an embedded
+    checksum. A corrupt or missing-checksum state file raises
+    StateCorruptionError instead of silently resetting to defaults.
+    Runtime retries are recorded separately and never decrement the semantic
+    budget.
     """
 
-    def __init__(self, state_path: str | Path) -> None:
+    def __init__(self, state_path: str | Path, default_semantic_retries: int = 3) -> None:
         self._state_path = Path(state_path)
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._default_semantic_retries = default_semantic_retries
         self._states: dict[str, RecoveryState] = {}
         self._load()
 
     def _load(self) -> None:
-        if self._state_path.exists():
-            data = json.loads(self._state_path.read_text())
-            if not isinstance(data, dict):
-                return
-            for task_id, raw in data.items():
-                if not isinstance(raw, dict):
-                    continue
-                blockers = {
-                    k: Blocker(**v)
-                    for k, v in raw.get("blockers", {}).items()
-                    if isinstance(v, dict)
-                }
-                attempts = {
-                    k: Attempt(**v)
-                    for k, v in raw.get("attempts", {}).items()
-                    if isinstance(v, dict)
-                }
-                self._states[task_id] = RecoveryState(
-                    task_id=task_id,
-                    semantic_retries_left=int(raw.get("semantic_retries_left", 0)),
-                    blockers=blockers,
-                    attempts=attempts,
-                    evidence_digests=set(raw.get("evidence_digests", [])),
-                    exhausted=bool(raw.get("exhausted", False)),
-                )
+        if not self._state_path.exists():
+            return
+        data = read_json_checked(self._state_path)
+        for task_id, raw in data.items():
+            if not isinstance(raw, dict):
+                continue
+            blockers = {
+                k: Blocker(**v)
+                for k, v in raw.get("blockers", {}).items()
+                if isinstance(v, dict)
+            }
+            attempts = {
+                k: Attempt(**v)
+                for k, v in raw.get("attempts", {}).items()
+                if isinstance(v, dict)
+            }
+            self._states[task_id] = RecoveryState(
+                task_id=task_id,
+                semantic_retries_left=int(raw.get("semantic_retries_left", 0)),
+                blockers=blockers,
+                attempts=attempts,
+                evidence_digests=set(raw.get("evidence_digests", [])),
+                exhausted=bool(raw.get("exhausted", False)),
+            )
 
     def _persist(self) -> None:
         payload: dict[str, Any] = {}
@@ -99,7 +102,7 @@ class RecoveryController:
                 "evidence_digests": sorted(state.evidence_digests),
                 "exhausted": state.exhausted,
             }
-        self._state_path.write_text(json.dumps(payload, indent=2))
+        atomic_write_json(self._state_path, payload)
 
     def initialize(self, task_id: str, semantic_retries: int) -> RecoveryEpoch:
         """Initialize recovery state for a task with a fixed semantic budget."""
@@ -190,11 +193,22 @@ class RecoveryController:
         self.consume_semantic_retry(task_id)
 
     def next_attempt(self, task_id: str) -> Attempt | None:
-        """Return a fresh attempt if retries remain, else None."""
-        if self.is_exhausted(task_id):
-            return None
+        """Return a fresh attempt if retries remain, else None.
+
+        If no state exists for the task yet (e.g., after a restore from a
+        backup that predates any attempt), a fresh state is created using the
+        default semantic retry budget.
+        """
         state = self._states.get(task_id)
         if state is None:
+            state = RecoveryState(
+                task_id=task_id,
+                semantic_retries_left=self._default_semantic_retries,
+                exhausted=self._default_semantic_retries <= 0,
+            )
+            self._states[task_id] = state
+            self._persist()
+        if state.exhausted:
             return None
         attempt = Attempt(id=f"{task_id}_a{len(state.attempts)}", task_id=task_id)
         state.attempts[attempt.id] = attempt
