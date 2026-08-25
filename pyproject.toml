@@ -7,7 +7,7 @@ name = "doom-team"
 version = "0.1.0"
 description = "Self-hosted autonomous software-engineering platform"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 license = {text = "Proprietary"}
 authors = [{name = "Doom Autopilot"}]
 dependencies = []
@@ -15,6 +15,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "mypy>=1.10.0",
+    "pip-tools>=7.4.0",
     "pre-commit",
     "pytest>=8.0.0",
     "ruff>=0.4.0",
