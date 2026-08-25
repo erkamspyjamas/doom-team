@@ -28,6 +28,10 @@ _ENV_PREFIX = "DOOM_"
 _DEFAULT_CREDENTIAL_ENV = "DOOM_API_KEY"
 _DEFAULT_RUNTIME = "local"
 _DEFAULT_SEMANTIC_RETRIES = 3
+_DEFAULT_PROVIDER_ORDER = ("CoreWeave", "DeepInfra", "SiliconFlow")
+_DEFAULT_FORBIDDEN_PROVIDERS = ("Relace",)
+_DEFAULT_ALLOW_FALLBACKS = True
+_DEFAULT_REQUEST_TIMEOUT = 60.0
 
 _REQUIRED_SETTINGS = ("state_dir", "model_provider", "model_name")
 
@@ -39,6 +43,10 @@ _KNOWN_SETTINGS = frozenset(
         "runtime",
         "semantic_retries",
         "provider_api_key_env",
+        "provider_order",
+        "forbidden_providers",
+        "allow_fallbacks",
+        "request_timeout",
     }
 )
 
@@ -93,6 +101,10 @@ class Settings:
     runtime: str = _DEFAULT_RUNTIME
     semantic_retries: int = _DEFAULT_SEMANTIC_RETRIES
     provider_api_key_env: str = _DEFAULT_CREDENTIAL_ENV
+    provider_order: tuple[str, ...] = _DEFAULT_PROVIDER_ORDER
+    forbidden_providers: tuple[str, ...] = _DEFAULT_FORBIDDEN_PROVIDERS
+    allow_fallbacks: bool = _DEFAULT_ALLOW_FALLBACKS
+    request_timeout: float = _DEFAULT_REQUEST_TIMEOUT
     _redactor: Redactor = field(default_factory=Redactor, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -106,6 +118,10 @@ class Settings:
             raise ConfigError("provider_api_key_env is required")
         if self.semantic_retries < 0:
             raise ConfigError("semantic_retries must be non-negative")
+        if not self.provider_order:
+            raise ConfigError("provider_order must not be empty")
+        if self.request_timeout <= 0:
+            raise ConfigError("request_timeout must be positive")
 
     def __repr__(self) -> str:
         base = (
@@ -114,7 +130,11 @@ class Settings:
             f"model_name={self.model_name!r}, runtime={self.runtime!r}, "
             f"semantic_retries={self.semantic_retries!r}, "
             f"provider_api_key_env={self.provider_api_key_env!r}, "
-            "provider_api_key=[REDACTED])"
+            f"provider_order={self.provider_order!r}, "
+            f"forbidden_providers={self.forbidden_providers!r}, "
+            f"allow_fallbacks={self.allow_fallbacks!r}, "
+            f"request_timeout={self.request_timeout!r}, "
+            f"api_key={REDACTED})"
         )
         return self.redact(base)
 
@@ -135,6 +155,10 @@ class Settings:
             "runtime": self.runtime,
             "semantic_retries": str(self.semantic_retries),
             "provider_api_key_env": self.provider_api_key_env,
+            "provider_order": ",".join(self.provider_order),
+            "forbidden_providers": ",".join(self.forbidden_providers),
+            "allow_fallbacks": str(self.allow_fallbacks).lower(),
+            "request_timeout": str(self.request_timeout),
         }
 
 
@@ -176,6 +200,23 @@ class ConfigLoader:
                 return int(value)
             except (TypeError, ValueError):
                 raise ConfigError(f"setting '{name}' must be an integer") from None
+        if name in ("provider_order", "forbidden_providers"):
+            if isinstance(value, (list, tuple)):
+                return tuple(str(v) for v in value)
+            if isinstance(value, str):
+                return tuple(v.strip() for v in value.split(",") if v.strip())
+            return value
+        if name == "allow_fallbacks":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+        if name == "request_timeout":
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                raise ConfigError("setting 'request_timeout' must be a number") from None
         return value
 
     def load(
@@ -187,6 +228,10 @@ class ConfigLoader:
         runtime: str | None = None,
         semantic_retries: int | None = None,
         provider_api_key_env: str | None = None,
+        provider_order: tuple[str, ...] | None = None,
+        forbidden_providers: tuple[str, ...] | None = None,
+        allow_fallbacks: bool | None = None,
+        request_timeout: float | None = None,
         config_file: str | Path | None = None,
     ) -> Settings:
         secret_values: list[str] = []
@@ -199,6 +244,10 @@ class ConfigLoader:
             "runtime": _DEFAULT_RUNTIME,
             "semantic_retries": _DEFAULT_SEMANTIC_RETRIES,
             "provider_api_key_env": _DEFAULT_CREDENTIAL_ENV,
+            "provider_order": _DEFAULT_PROVIDER_ORDER,
+            "forbidden_providers": _DEFAULT_FORBIDDEN_PROVIDERS,
+            "allow_fallbacks": _DEFAULT_ALLOW_FALLBACKS,
+            "request_timeout": _DEFAULT_REQUEST_TIMEOUT,
         }
         merged: dict[str, Any] = dict(defaults)
         merged.update(self._config_file_values(config_file))
@@ -213,6 +262,10 @@ class ConfigLoader:
             "runtime": runtime,
             "semantic_retries": semantic_retries,
             "provider_api_key_env": provider_api_key_env,
+            "provider_order": provider_order,
+            "forbidden_providers": forbidden_providers,
+            "allow_fallbacks": allow_fallbacks,
+            "request_timeout": request_timeout,
         }
         for name, value in explicit.items():
             if value is not None:
@@ -251,6 +304,10 @@ class ConfigLoader:
             runtime=str(coerced["runtime"]),
             semantic_retries=int(coerced["semantic_retries"]),
             provider_api_key_env=cred_env,
+            provider_order=tuple(coerced["provider_order"]),
+            forbidden_providers=tuple(coerced["forbidden_providers"]),
+            allow_fallbacks=bool(coerced["allow_fallbacks"]),
+            request_timeout=float(coerced["request_timeout"]),
             _redactor=redactor,
         )
 
@@ -263,6 +320,10 @@ def load_config(
     runtime: str | None = None,
     semantic_retries: int | None = None,
     provider_api_key_env: str | None = None,
+    provider_order: tuple[str, ...] | None = None,
+    forbidden_providers: tuple[str, ...] | None = None,
+    allow_fallbacks: bool | None = None,
+    request_timeout: float | None = None,
     config_file: str | Path | None = None,
 ) -> Settings:
     """Load configuration from the process environment."""
@@ -273,5 +334,9 @@ def load_config(
         runtime=runtime,
         semantic_retries=semantic_retries,
         provider_api_key_env=provider_api_key_env,
+        provider_order=provider_order,
+        forbidden_providers=forbidden_providers,
+        allow_fallbacks=allow_fallbacks,
+        request_timeout=request_timeout,
         config_file=config_file,
     )

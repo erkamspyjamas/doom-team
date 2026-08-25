@@ -25,6 +25,10 @@ credential is missing. There are no defaults for required values.
 | `runtime` | no | `DOOM_RUNTIME` | Runtime id (default `local`) |
 | `semantic_retries` | no | `DOOM_SEMANTIC_RETRIES` | Semantic retry budget (default `3`) |
 | `provider_api_key_env` | no | `DOOM_PROVIDER_API_KEY_ENV` | Env var name holding the credential (default `DOOM_API_KEY`) |
+| `provider_order` | no | `DOOM_PROVIDER_ORDER` | Comma-separated preferred provider order for OpenRouter (default `CoreWeave,DeepInfra,SiliconFlow`) |
+| `forbidden_providers` | no | `DOOM_FORBIDDEN_PROVIDERS` | Comma-separated forbidden providers (default `Relace`) |
+| `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
+| `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 
 ## Credentials and secrets
 
@@ -34,11 +38,13 @@ credential is missing. There are no defaults for required values.
   startup; otherwise startup fails closed.
 - Secret values are redacted (`[REDACTED]`) from reprs, `log_line()`, error
   messages, and evidence views (`as_evidence_dict()`).
+- Private reasoning contents from inference responses are never persisted
+  into evidence or logs; only token counts and provenance are recorded.
 
 ## Example
 
 ```bash
-export DOOM_API_KEY='...'
+export DOOM_[REDACTED]
 export DOOM_MODEL_PROVIDER='nvidia'
 python -c "from doom_team.config import ConfigLoader; s = ConfigLoader().load(state_dir='/var/lib/doom', model_name='deepseek-v4'); print(s.log_line())"
 ```
