@@ -70,6 +70,10 @@ class Settings:
             return value.replace(self._api_key, "[REDACTED]")
         return value
 
+    def redaction_secrets(self) -> tuple[str, ...]:
+        """Return secret values used for redaction at the observability sink."""
+        return (self._api_key,) if self._api_key else ()
+
     def log_line(self) -> str:
         """Return a single operator-readable, secret-safe settings line."""
         return (
@@ -229,7 +233,7 @@ class ConfigLoader:
             or file_values.get("provider_api_key_env")
             or "DOOM_API_KEY"
         )
-        api_key = env.get(str(api_key_env), "")
+        api_key = os.environ.get(api_key_env, "")
         if not api_key:
             raise ConfigError(f"credential environment variable {api_key_env} must be set")
 

@@ -3,7 +3,8 @@
 Implements fan-out/fan-in over independent tasks with a dependency DAG.
 Each task runs in its own isolated workspace and produces its own evidence
 and verdicts. Dynamic capability routing records the actual provider/model/
-runtime route via the InferenceTelemetryPort.
+runtime route via the InferenceTelemetryPort. Lifecycle events are recorded
+through an optional durable event sink.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from doom_team.domain import Attempt, Candidate, Evidence, Mission, TaskContract
+from doom_team.observability import Event, EventSink
 from doom_team.ports import InferenceTelemetryPort, RepositoryPort, WorkspacePort
 from doom_team.qa_reviewer import run_validation
 from doom_team.verdicts import Verdict, VerdictStore
@@ -62,6 +64,7 @@ class ParallelMissionRunner:
         reviewer_verify: Callable[[Candidate, Evidence], tuple[bool, str]],
         model: str = "deepseek-v4",
         runtime: str = "local",
+        event_sink: EventSink | None = None,
     ) -> None:
         self._workspace = workspace_port
         self._repository = repository_port
@@ -72,38 +75,53 @@ class ParallelMissionRunner:
         self._reviewer_verify = reviewer_verify
         self._model = model
         self._runtime = runtime
+        self._event_sink = event_sink
+
+    def _record(self, kind: str, details: dict[str, object], producer_role: str = "dev") -> None:
+        if self._event_sink is not None:
+            self._event_sink.record(
+                Event(kind=kind, details=details, producer_role=producer_role)
+            )
 
     def run(self, mission: Mission) -> dict[str, TaskOutcome]:
         """Execute all tasks respecting dependencies. Returns per-task outcomes."""
-        # Build dependency graph
-        deps: dict[str, set[str]] = {t.id: set(t.dependencies) for t in mission.tasks}
-        completed: set[str] = set()
-        outcomes: dict[str, TaskOutcome] = {}
+        self._record("MISSION_STARTED", {"mission_id": mission.id, "objective_id": mission.objective.id})
+        try:
+            # Build dependency graph
+            deps: dict[str, set[str]] = {t.id: set(t.dependencies) for t in mission.tasks}
+            completed: set[str] = set()
+            outcomes: dict[str, TaskOutcome] = {}
 
-        # Simple scheduler: repeatedly run all ready tasks until all done
-        while len(completed) < len(mission.tasks):
-            ready = [
-                t
-                for t in mission.tasks
-                if t.id not in completed and deps[t.id].issubset(completed)
-            ]
-            if not ready:
-                raise RuntimeError("Dependency graph stalled; possible cycle")
+            # Simple scheduler: repeatedly run all ready tasks until all done
+            while len(completed) < len(mission.tasks):
+                ready = [
+                    t
+                    for t in mission.tasks
+                    if t.id not in completed and deps[t.id].issubset(completed)
+                ]
+                if not ready:
+                    raise RuntimeError("Dependency graph stalled; possible cycle")
 
-            # Execute ready tasks in parallel (simple sequential loop; concurrency is logical)
-            for task in ready:
-                outcome = self._execute_task(mission, task)
-                outcomes[task.id] = outcome
-                if outcome.error is None and outcome.candidate is not None:
-                    completed.add(task.id)
-                else:
-                    # Fail-fast: stop mission on first error
-                    return outcomes
-        return outcomes
+                # Execute ready tasks in parallel (simple sequential loop; concurrency is logical)
+                for task in ready:
+                    outcome = self._execute_task(mission, task)
+                    outcomes[task.id] = outcome
+                    if outcome.error is None and outcome.candidate is not None:
+                        completed.add(task.id)
+                    else:
+                        # Fail-fast: stop mission on first error
+                        return outcomes
+            return outcomes
+        finally:
+            self._record("MISSION_COMPLETED", {"mission_id": mission.id})
 
     def _execute_task(self, mission: Mission, task: TaskContract) -> TaskOutcome:
         """Run one task end-to-end with isolated workspace and evidence."""
         workspace_id = self._workspace.create_workspace(task.id)
+        self._record(
+            "TASK_STARTED",
+            {"task_id": task.id, "workspace_id": workspace_id, "mission_id": mission.id},
+        )
         try:
             baseline_commit = self._repository.baseline_commit(workspace_id)
             candidate_commit = self._runner(task, workspace_id)
@@ -159,6 +177,15 @@ class ParallelMissionRunner:
                 verify=self._reviewer_verify,
             )
 
+            self._record(
+                "TASK_COMPLETED",
+                {
+                    "task_id": task.id,
+                    "candidate_id": candidate.id,
+                    "candidate_commit": candidate_commit,
+                    "workspace_id": workspace_id,
+                },
+            )
             return TaskOutcome(
                 task_id=task.id,
                 candidate=candidate,
@@ -167,6 +194,10 @@ class ParallelMissionRunner:
                 reviewer_verdict=reviewer_verdict,
             )
         except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            self._record(
+                "TASK_FAILED",
+                {"task_id": task.id, "workspace_id": workspace_id, "error": str(exc)},
+            )
             return TaskOutcome(
                 task_id=task.id,
                 candidate=None,

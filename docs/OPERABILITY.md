@@ -19,6 +19,7 @@ The service owns the following state and must create it if missing, never write 
 | Recovery state | `RecoveryController` | JSON file with semantic retry budget and exhaustion |
 | Orchestration run mapping | `GasCityAdapter` | JSON file mapping Doom run ids to Gas City run ids |
 | Preserved workspaces | `GitWorkspace` | Moved under `<base>/preserved/` |
+| Event history | `DurableEventSink` | Append-only JSON-lines under `<base>/events/events.jsonl` |
 
 ## 3. Configuration Ownership and Precedence
 
@@ -46,6 +47,7 @@ Must survive restart:
 - Orchestration run mappings (`GasCityAdapter`)
 - Evidence and verdict records (durable stores)
 - Preserved workspaces (`GitWorkspace`)
+- Event history (`DurableEventSink`)
 
 Must never double-apply:
 - A candidate commit

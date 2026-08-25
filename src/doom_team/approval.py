@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from doom_team.observability import Event, EventSink
 from doom_team.ports import ApprovalPort
 
 
@@ -64,16 +65,24 @@ class DurableApprovalPort(ApprovalPort):
         base_dir: str | Path,
         contract_revision: str = "contract-1",
         roadmap_revision: str = "roadmap-1",
+        event_sink: EventSink | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.approvals_dir = self.base_dir / "approvals"
         self.approvals_dir.mkdir(parents=True, exist_ok=True)
         self.contract_revision = contract_revision
         self.roadmap_revision = roadmap_revision
+        self._event_sink = event_sink
 
     def _path(self, action: str, frontier_sha: str) -> Path:
         safe_action = action.replace("/", "_").replace("\\", "_")
         return self.approvals_dir / f"{safe_action}__{frontier_sha}.json"
+
+    def _record_event(self, kind: str, details: dict[str, Any]) -> None:
+        if self._event_sink is not None:
+            self._event_sink.record(
+                Event(kind=kind, details=details, producer_role="approval")
+            )
 
     def approve(
         self,
@@ -113,6 +122,18 @@ class DurableApprovalPort(ApprovalPort):
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
         os.replace(tmp, path)
+        self._record_event(
+            "APPROVAL_RECORDED",
+            {
+                "action": action,
+                "frontier_sha": frontier_sha,
+                "operator": operator,
+                "decision": bool(decision),
+                "contract_revision": contract_revision,
+                "roadmap_revision": roadmap_revision,
+                "digest": digest,
+            },
+        )
         return digest
 
     def load(self, action: str, frontier_sha: str) -> ApprovalRecord:
@@ -171,14 +192,35 @@ class DurableApprovalPort(ApprovalPort):
         """Return True only for a valid, current, non-corrupt approval record."""
         frontier_sha = context.get("frontier_sha")
         if not frontier_sha or not isinstance(frontier_sha, str):
+            self._record_event(
+                "APPROVAL_ERROR", {"action": action, "reason": "missing frontier_sha"}
+            )
             return False
         try:
             record = self.load(action, frontier_sha)
-        except (FileNotFoundError, ApprovalRecordCorruptError):
+        except (FileNotFoundError, ApprovalRecordCorruptError) as exc:
+            self._record_event(
+                "APPROVAL_ERROR",
+                {"action": action, "frontier_sha": frontier_sha, "reason": str(exc)},
+            )
             return False
         if record.decision is not True:
+            self._record_event(
+                "APPROVAL_DENIED",
+                {"action": action, "frontier_sha": frontier_sha, "reason": "decision false"},
+            )
             return False
-        return (
+        ok = (
             record.contract_revision == self.contract_revision
             and record.roadmap_revision == self.roadmap_revision
         )
+        if not ok:
+            self._record_event(
+                "APPROVAL_DENIED",
+                {
+                    "action": action,
+                    "frontier_sha": frontier_sha,
+                    "reason": "stale revisions",
+                },
+            )
+        return ok

@@ -20,6 +20,13 @@ from collections.abc import Sequence
 from doom_team.approval import DurableApprovalPort
 from doom_team.config import ConfigError, ConfigLoader, Settings
 from doom_team.evidence import DurableEvidenceStore
+from doom_team.observability import (
+    DurableEventSink,
+    Event,
+    EventHistory,
+    check_health,
+    check_readiness,
+)
 from doom_team.verdicts import DurableVerdictStore
 
 EXIT_SUCCESS = 0
@@ -65,11 +72,26 @@ def _load_settings(args: argparse.Namespace) -> Settings:
     )
 
 
+def _make_event_sink(settings: Settings) -> DurableEventSink:
+    return DurableEventSink(settings.state_dir, secret_values=settings.redaction_secrets())
+
+
 def _cmd_serve(settings: Settings) -> int:
     """Run the service loop in the foreground with graceful shutdown."""
     # Initialize durable state to prove restart-safe startup (idempotent).
     DurableEvidenceStore(settings.state_dir)
     DurableVerdictStore(settings.state_dir)
+    sink = _make_event_sink(settings)
+    sink.record(
+        Event(
+            kind="SERVICE_STARTED",
+            producer_role="system",
+            details={
+                "model_provider": settings.model_provider,
+                "model_name": settings.model_name,
+            },
+        )
+    )
 
     print("Doom Team service ready", flush=True)
 
@@ -84,17 +106,26 @@ def _cmd_serve(settings: Settings) -> int:
     while not shutdown.is_set():
         shutdown.wait(timeout=0.5)
 
+    sink.record(Event(kind="SERVICE_STOPPED", producer_role="system", details={}))
     print("Doom Team service stopped", flush=True)
     return EXIT_SUCCESS
 
 
 def _cmd_status(settings: Settings) -> int:
-    """Print operator-readable current state."""
+    """Print operator-readable current state and observability diagnostics."""
     ev_store = DurableEvidenceStore(settings.state_dir)
     verdict_store = DurableVerdictStore(settings.state_dir)
     evidence_count = len(list(ev_store.evidence_dir.glob("*.json")))
     verdict_count = len(list(verdict_store.verdict_dir.glob("*.json")))
     recovery_path = settings.state_dir / "recovery.json"
+
+    sink = _make_event_sink(settings)
+    history = EventHistory(sink)
+    healthy, health_msg = check_health(settings)
+    ready, ready_msg = check_readiness(settings)
+    active_tasks = history.active_tasks()
+    recent_errors = history.recent_errors()
+    last_events = history.last_events()
 
     print(f"state_dir: {settings.state_dir}")
     print(f"model_provider: {settings.model_provider}")
@@ -104,6 +135,17 @@ def _cmd_status(settings: Settings) -> int:
     print(f"evidence records: {evidence_count}")
     print(f"verdict records: {verdict_count}")
     print(f"recovery state file: {'present' if recovery_path.exists() else 'absent'}")
+    print(f"health: {health_msg}")
+    print(f"readiness: {ready_msg}")
+    print(f"active tasks: {len(active_tasks)}")
+    for task in active_tasks:
+        print(f"  - {task['task_id']} started at {task['started_at']}")
+    print(f"recent errors: {len(recent_errors)}")
+    for event in recent_errors:
+        print(f"  - {event.kind}: {event.details}")
+    print(f"last events: {len(last_events)}")
+    for event in last_events:
+        print(f"  - {event.timestamp.isoformat()} {event.kind} by {event.producer_role}")
     return EXIT_SUCCESS
 
 
@@ -122,28 +164,28 @@ def _cmd_doctor(settings: Settings) -> int:
     try:
         DurableEvidenceStore(settings.state_dir)
         DurableVerdictStore(settings.state_dir)
+        _make_event_sink(settings)
     except OSError as exc:
         print(f"doctor: state store error: {exc}", file=sys.stderr)
         return EXIT_STATE_ERROR
 
-    # Connectivity readiness: coherent provider configuration and credential.
-    if not settings.model_provider or not settings.model_name:
-        print("doctor: model provider/name missing", file=sys.stderr)
-        return 3
-    if not settings.provider_order:
-        print("doctor: provider order empty", file=sys.stderr)
-        return 3
-    if not settings.provider_api_key_env:
-        print("doctor: credential env missing", file=sys.stderr)
+    healthy, health_msg = check_health(settings)
+    ready, ready_msg = check_readiness(settings)
+    if not healthy:
+        print(f"doctor: {health_msg}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    if not ready:
+        print(f"doctor: {ready_msg}", file=sys.stderr)
         return 3
 
-    print("doctor: healthy")
+    print(f"doctor: {health_msg}")
+    print(f"doctor: {ready_msg}")
     return EXIT_SUCCESS
 
 
 def _cmd_approve(settings: Settings, args: argparse.Namespace) -> int:
     """Record a human approval via the durable ApprovalPort. Never deploys."""
-    port = DurableApprovalPort(settings.state_dir)
+    port = DurableApprovalPort(settings.state_dir, event_sink=_make_event_sink(settings))
     try:
         digest = port.approve(
             args.action,

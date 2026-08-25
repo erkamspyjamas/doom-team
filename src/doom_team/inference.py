@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from doom_team.observability import Event, EventSink
+
 TIMEOUT = "timeout"
 OVERLOAD = "overload"
 REJECTION = "rejection"
@@ -83,6 +85,8 @@ class OpenAICompatibleInferenceClient:
         routing: ProviderRouting | None = None,
         provider_field: str = "provider",
         urlopen: Callable[..., Any] | None = None,
+        event_sink: EventSink | None = None,
+        producer_run: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -91,6 +95,22 @@ class OpenAICompatibleInferenceClient:
         self._routing = routing
         self._provider_field = provider_field
         self._urlopen = urlopen if urlopen is not None else urllib.request.urlopen
+        self._event_sink = event_sink
+        self._producer_run = producer_run
+
+    def _record_error(self, kind: str, detail: str, status: int | None = None) -> None:
+        if self._event_sink is not None:
+            details: dict[str, Any] = {"kind": kind, "detail": detail}
+            if status is not None:
+                details["status"] = status
+            self._event_sink.record(
+                Event(
+                    kind="PROVIDER_ERROR",
+                    details=details,
+                    producer_role="inference",
+                    producer_run=self._producer_run,
+                )
+            )
 
     def complete(self, messages: list[dict[str, str]]) -> InferenceResponse:
         """Send a chat completion request and return a normalized response."""
@@ -114,17 +134,22 @@ class OpenAICompatibleInferenceClient:
                 status = resp.status
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            raise self._map_http_error(exc) from exc
+            failure = self._map_http_error(exc)
+            self._record_error(failure.failure.kind, failure.failure.detail, failure.failure.status)
+            raise failure from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, TimeoutError) or "timed out" in str(reason):
+                self._record_error(TIMEOUT, "request timed out")
                 raise InferenceError(
                     InferenceFailure(TIMEOUT, "request timed out")
                 ) from exc
+            self._record_error(OVERLOAD, f"network error: {exc}")
             raise InferenceError(
                 InferenceFailure(OVERLOAD, f"network error: {exc}")
             ) from exc
         except TimeoutError as exc:
+            self._record_error(TIMEOUT, "request timed out")
             raise InferenceError(
                 InferenceFailure(TIMEOUT, "request timed out")
             ) from exc
@@ -132,13 +157,16 @@ class OpenAICompatibleInferenceClient:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
+            self._record_error(MALFORMED, "invalid JSON response")
             raise InferenceError(
                 InferenceFailure(MALFORMED, "invalid JSON response")
             ) from exc
 
         if 200 <= status < 300:
             return self._parse_success(data)
-        raise self._map_http_error(status, raw)
+        failure = self._map_http_error(status, raw)
+        self._record_error(failure.failure.kind, failure.failure.detail, failure.failure.status)
+        raise failure
 
     def _map_http_error(
         self, exc_or_status: urllib.error.HTTPError | int, raw: str = ""
@@ -171,6 +199,7 @@ class OpenAICompatibleInferenceClient:
             completion_tokens = int(usage.get("completion_tokens", 0))
             total_tokens = int(usage.get("total_tokens", 0))
         except (KeyError, TypeError, ValueError) as exc:
+            self._record_error(MALFORMED, f"malformed response: {exc}")
             raise InferenceError(
                 InferenceFailure(MALFORMED, f"malformed response: {exc}")
             ) from exc
