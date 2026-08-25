@@ -1,17 +1,12 @@
 """Typed, validated, secret-safe production configuration.
 
-Precedence (highest first):
-
-1. Explicit arguments to ``ConfigLoader.load``
-2. Environment variables (``DOOM_*``)
-3. Configuration file (JSON object)
-4. Safe defaults for optional settings
-
-Required settings (``state_dir``, ``model_provider``, ``model_name``) and the
-provider credential (referenced by environment variable name) have no default:
-startup fails closed when they are missing. Secret values are never stored in
-files or code; they are referenced by environment variable name and redacted
-from reprs, error messages, logs and evidence views.
+Settings are resolved from layered sources: explicit runtime overrides
+(CLI/env) take precedence over the configuration file, which takes
+precedence over safe defaults. Required settings and the provider
+credential fail closed: startup raises :class:`ConfigError` when any
+required value is missing. Secret values are never embedded in files,
+logs, or evidence; only the environment variable name holding the
+credential is recorded.
 """
 
 from __future__ import annotations
@@ -20,310 +15,248 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
-
-REDACTED = "[REDACTED]"
-
-_ENV_PREFIX = "DOOM_"
-_DEFAULT_CREDENTIAL_ENV = "DOOM_API_KEY"
-_DEFAULT_RUNTIME = "local"
-_DEFAULT_SEMANTIC_RETRIES = 3
-_DEFAULT_GAS_CITY_URL = ""
-_DEFAULT_GAS_CITY_TIMEOUT = 10.0
-_DEFAULT_GAS_CITY_MAX_RETRIES = 3
-
-_REQUIRED_SETTINGS = ("state_dir", "model_provider", "model_name")
-
-_KNOWN_SETTINGS = frozenset(
-    {
-        "state_dir",
-        "model_provider",
-        "model_name",
-        "runtime",
-        "semantic_retries",
-        "provider_api_key_env",
-        "gas_city_url",
-        "gas_city_timeout",
-        "gas_city_max_retries",
-    }
-)
-
-_SECRET_MARKERS = (
-    "token",
-    "password",
-    "secret",
-    "apikey",
-    "api_key",
-    "access_key",
-    "private_key",
-    "credential",
-    "auth",
-)
+from typing import Any
 
 
 class ConfigError(Exception):
-    """Raised when configuration is invalid or required settings are missing."""
+    """Raised when configuration is invalid or required values are missing."""
 
 
-def _is_secret_name(name: str) -> bool:
-    lowered = name.lower()
-    return any(marker in lowered for marker in _SECRET_MARKERS)
+def _env_name(setting: str) -> str:
+    return f"DOOM_{setting.upper()}"
 
 
-@dataclass(frozen=True)
-class Redactor:
-    """Redacts known secret values from arbitrary text."""
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
 
-    _values: tuple[str, ...] = ()
 
-    def redact(self, text: str) -> str:
-        """Return ``text`` with any known secret values replaced."""
-        result = text
-        for value in self._values:
-            if value and value in result:
-                result = result.replace(value, REDACTED)
-        return result
+def _parse_int(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ConfigError(f"{value} must be an integer") from exc
+
+
+def _parse_float(value: str) -> float:
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ConfigError(f"{value} must be a number") from exc
+
+
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Validated, immutable Doom Team runtime settings.
-
-    Credentials are referenced by environment variable name
-    (``provider_api_key_env``); their values are never stored in files or code.
-    """
+    """Typed, validated production configuration (secret-safe)."""
 
     state_dir: Path
     model_provider: str
     model_name: str
-    runtime: str = _DEFAULT_RUNTIME
-    semantic_retries: int = _DEFAULT_SEMANTIC_RETRIES
-    provider_api_key_env: str = _DEFAULT_CREDENTIAL_ENV
-    gas_city_url: str = _DEFAULT_GAS_CITY_URL
-    gas_city_timeout: float = _DEFAULT_GAS_CITY_TIMEOUT
-    gas_city_max_retries: int = _DEFAULT_GAS_CITY_MAX_RETRIES
-    _redactor: Redactor = field(default_factory=Redactor, repr=False, compare=False)
+    runtime: str = "local"
+    semantic_retries: int = 3
+    provider_api_key_env: str = "DOOM_API_KEY"
+    provider_order: tuple[str, ...] = ("CoreWeave", "DeepInfra", "SiliconFlow")
+    forbidden_providers: tuple[str, ...] = ("Relace",)
+    allow_fallbacks: bool = True
+    request_timeout: float = 60.0
+    _api_key: str = field(repr=False, default="")
 
-    def __post_init__(self) -> None:
-        if not str(self.state_dir).strip():
-            raise ConfigError("state_dir is required")
-        if not self.model_provider.strip():
-            raise ConfigError("model_provider is required")
-        if not self.model_name.strip():
-            raise ConfigError("model_name is required")
-        if not self.provider_api_key_env.strip():
-            raise ConfigError("provider_api_key_env is required")
-        if self.semantic_retries < 0:
-            raise ConfigError("semantic_retries must be non-negative")
-        if self.gas_city_timeout < 0:
-            raise ConfigError("gas_city_timeout must be non-negative")
-        if self.gas_city_max_retries < 0:
-            raise ConfigError("gas_city_max_retries must be non-negative")
-        object.__setattr__(self, "gas_city_url", self.gas_city_url.strip())
-
-    def __repr__(self) -> str:
-        base = (
-            f"Settings(state_dir={self.state_dir!r}, "
-            f"model_provider={self.model_provider!r}, "
-            f"model_name={self.model_name!r}, runtime={self.runtime!r}, "
-            f"semantic_retries={self.semantic_retries!r}, "
-            f"provider_api_key_env={self.provider_api_key_env!r}, "
-            f"gas_city_url={self.gas_city_url!r}, "
-            f"gas_city_timeout={self.gas_city_timeout!r}, "
-            f"gas_city_max_retries={self.gas_city_max_retries!r}, "
-            "provider_credential=[REDACTED])"
-        )
-        return self.redact(base)
-
-    def redact(self, text: str) -> str:
-        """Redact known secret values from arbitrary text."""
-        return self._redactor.redact(text)
+    def redact(self, value: str) -> str:
+        """Replace the configured secret value with a redaction marker."""
+        if self._api_key and self._api_key in value:
+            return value.replace(self._api_key, "[REDACTED]")
+        return value
 
     def log_line(self) -> str:
-        """A redacted one-line description safe to emit in logs."""
-        return repr(self)
+        """Return a single operator-readable, secret-safe settings line."""
+        return (
+            f"state_dir={self.state_dir} model_provider={self.model_provider} "
+            f"model_name={self.model_name} runtime={self.runtime} "
+            f"semantic_retries={self.semantic_retries} "
+            f"provider_api_key_env={self.provider_api_key_env} "
+            f"provider_order={self.provider_order} "
+            f"forbidden_providers={self.forbidden_providers} "
+            f"allow_fallbacks={self.allow_fallbacks} "
+            f"request_timeout={self.request_timeout} credential=[REDACTED]"
+        )
 
-    def as_evidence_dict(self) -> dict[str, str]:
-        """An evidence-safe view containing no credential values."""
+    def as_evidence_dict(self) -> dict[str, Any]:
+        """Return a secret-safe dict suitable for evidence records."""
         return {
             "state_dir": str(self.state_dir),
             "model_provider": self.model_provider,
             "model_name": self.model_name,
             "runtime": self.runtime,
-            "semantic_retries": str(self.semantic_retries),
+            "semantic_retries": self.semantic_retries,
             "provider_api_key_env": self.provider_api_key_env,
-            "gas_city_url": self.gas_city_url,
-            "gas_city_timeout": str(self.gas_city_timeout),
-            "gas_city_max_retries": str(self.gas_city_max_retries),
+            "provider_order": list(self.provider_order),
+            "forbidden_providers": list(self.forbidden_providers),
+            "allow_fallbacks": self.allow_fallbacks,
+            "request_timeout": self.request_timeout,
+            "credential": "[REDACTED]",
         }
+
+    def __repr__(self) -> str:
+        return (
+            f"Settings(state_dir={self.state_dir!r}, model_provider={self.model_provider!r}, "
+            f"model_name={self.model_name!r}, runtime={self.runtime!r}, "
+            f"semantic_retries={self.semantic_retries!r}, "
+            f"provider_api_key_env={self.provider_api_key_env!r}, "
+            f"provider_order={self.provider_order!r}, "
+            f"forbidden_providers={self.forbidden_providers!r}, "
+            f"allow_fallbacks={self.allow_fallbacks!r}, "
+            f"request_timeout={self.request_timeout!r}, credential=[REDACTED])"
+        )
 
 
 class ConfigLoader:
-    """Loads and validates :class:`Settings` from layered sources.
-
-    Precedence: explicit arguments > environment variables > config file >
-    defaults. Missing required settings or credentials cause a fail-closed
-    :class:`ConfigError` at startup.
-    """
-
-    def __init__(self, env: Mapping[str, str] | None = None) -> None:
-        self._env = os.environ if env is None else env
-
-    def _env_values(self) -> dict[str, Any]:
-        values: dict[str, Any] = {}
-        for key, value in self._env.items():
-            if key.startswith(_ENV_PREFIX):
-                values[key[len(_ENV_PREFIX) :].lower()] = value
-        return values
-
-    def _config_file_values(self, config_file: str | Path | None) -> dict[str, Any]:
-        if config_file is None:
-            return {}
-        path = Path(config_file)
-        if not path.is_file():
-            raise ConfigError(f"config file not found: {path}")
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"invalid config file {path}: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ConfigError(f"config file {path} must contain a JSON object")
-        return data
-
-    def _coerce(self, name: str, value: Any) -> Any:
-        if name == "semantic_retries":
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                raise ConfigError(f"setting '{name}' must be an integer") from None
-        if name == "gas_city_timeout":
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                raise ConfigError(f"setting '{name}' must be a number") from None
-        if name == "gas_city_max_retries":
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                raise ConfigError(f"setting '{name}' must be an integer") from None
-        return value
+    """Resolve settings from layered sources with fail-closed validation."""
 
     def load(
         self,
         *,
-        state_dir: str | Path | None = None,
+        state_dir: str | None = None,
         model_provider: str | None = None,
         model_name: str | None = None,
         runtime: str | None = None,
         semantic_retries: int | None = None,
         provider_api_key_env: str | None = None,
-        gas_city_url: str | None = None,
-        gas_city_timeout: float | None = None,
-        gas_city_max_retries: int | None = None,
+        provider_order: str | None = None,
+        forbidden_providers: str | None = None,
+        allow_fallbacks: bool | None = None,
+        request_timeout: float | None = None,
         config_file: str | Path | None = None,
     ) -> Settings:
-        secret_values: list[str] = []
-        for key, value in self._env.items():
-            if value and _is_secret_name(key):
-                secret_values.append(value)
-        redactor = Redactor(tuple(secret_values))
+        """Load and validate settings; raises :class:`ConfigError` on failure."""
+        file_values = self._read_config_file(config_file)
+        env = os.environ
 
-        defaults: dict[str, Any] = {
-            "runtime": _DEFAULT_RUNTIME,
-            "semantic_retries": _DEFAULT_SEMANTIC_RETRIES,
-            "provider_api_key_env": _DEFAULT_CREDENTIAL_ENV,
-            "gas_city_url": _DEFAULT_GAS_CITY_URL,
-            "gas_city_timeout": _DEFAULT_GAS_CITY_TIMEOUT,
-            "gas_city_max_retries": _DEFAULT_GAS_CITY_MAX_RETRIES,
-        }
-        merged: dict[str, Any] = dict(defaults)
-        merged.update(self._config_file_values(config_file))
-        env_values = self._env_values()
-        merged.update(
-            {key: value for key, value in env_values.items() if key in _KNOWN_SETTINGS}
+        def env_value(name: str) -> str | None:
+            value = env.get(_env_name(name), "")
+            return value if value else None
+
+        # Required settings (no defaults) - fail closed.
+        resolved_state_dir = (
+            state_dir or env_value("state_dir") or file_values.get("state_dir")
         )
-        explicit: dict[str, Any] = {
-            "state_dir": state_dir,
-            "model_provider": model_provider,
-            "model_name": model_name,
-            "runtime": runtime,
-            "semantic_retries": semantic_retries,
-            "provider_api_key_env": provider_api_key_env,
-            "gas_city_url": gas_city_url,
-            "gas_city_timeout": gas_city_timeout,
-            "gas_city_max_retries": gas_city_max_retries,
-        }
-        for name, value in explicit.items():
-            if value is not None:
-                merged[name] = value
+        if not resolved_state_dir:
+            raise ConfigError("state_dir is required")
+        resolved_provider = (
+            model_provider
+            or env_value("model_provider")
+            or file_values.get("model_provider")
+        )
+        if not resolved_provider:
+            raise ConfigError("model_provider is required")
+        resolved_model = (
+            model_name or env_value("model_name") or file_values.get("model_name")
+        )
+        if not resolved_model:
+            raise ConfigError("model_name is required")
 
-        coerced = {name: self._coerce(name, value) for name, value in merged.items()}
+        resolved_runtime = (
+            runtime or env_value("runtime") or file_values.get("runtime") or "local"
+        )
 
-        for name in _REQUIRED_SETTINGS:
-            if not str(coerced.get(name, "")).strip():
-                raise ConfigError(
-                    redactor.redact(f"required setting '{name}' is missing")
-                )
+        retries = semantic_retries
+        if retries is None:
+            env_retries = env_value("semantic_retries")
+            if env_retries is not None:
+                retries = _parse_int(env_retries)
+            elif "semantic_retries" in file_values:
+                retries = file_values["semantic_retries"]
+            else:
+                retries = 3
+        if not isinstance(retries, int) or isinstance(retries, bool):
+            raise ConfigError(f"semantic_retries must be an integer: {retries!r}")
+        if retries < 0:
+            raise ConfigError("semantic_retries must be >= 0")
 
-        cred_env = str(coerced.get("provider_api_key_env", "")).strip()
-        if not cred_env:
-            raise ConfigError(redactor.redact("provider_api_key_env is required"))
-        if not self._env.get(cred_env, ""):
-            raise ConfigError(
-                redactor.redact(
-                    f"credential environment variable '{cred_env}' is not set"
-                )
-            )
+        order_raw = (
+            provider_order
+            or env_value("provider_order")
+            or file_values.get("provider_order")
+        )
+        provider_order_value: tuple[str, ...]
+        if order_raw is None:
+            provider_order_value = ("CoreWeave", "DeepInfra", "SiliconFlow")
+        elif isinstance(order_raw, str):
+            provider_order_value = _split_csv(order_raw)
+        else:
+            provider_order_value = tuple(str(p) for p in order_raw)
 
-        cred_value = self._env.get(cred_env, "")
-        if cred_value:
-            unique: list[str] = []
-            for value in (*secret_values, cred_value):
-                if value and value not in unique:
-                    unique.append(value)
-            redactor = Redactor(tuple(unique))
+        forbidden_raw = (
+            forbidden_providers
+            or env_value("forbidden_providers")
+            or file_values.get("forbidden_providers")
+        )
+        forbidden_value: tuple[str, ...]
+        if forbidden_raw is None:
+            forbidden_value = ("Relace",)
+        elif isinstance(forbidden_raw, str):
+            forbidden_value = _split_csv(forbidden_raw)
+        else:
+            forbidden_value = tuple(str(p) for p in forbidden_raw)
+
+        allow = allow_fallbacks
+        if allow is None:
+            env_allow = env_value("allow_fallbacks")
+            if env_allow is not None:
+                allow = _parse_bool(env_allow)
+            elif "allow_fallbacks" in file_values:
+                allow = bool(file_values["allow_fallbacks"])
+            else:
+                allow = True
+
+        timeout = request_timeout
+        if timeout is None:
+            env_timeout = env_value("request_timeout")
+            if env_timeout is not None:
+                timeout = _parse_float(env_timeout)
+            elif "request_timeout" in file_values:
+                timeout = file_values["request_timeout"]
+            else:
+                timeout = 60.0
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+            raise ConfigError(f"request_timeout must be a number: {timeout!r}")
+
+        api_key_env = (
+            provider_api_key_env
+            or env_value("provider_api_key_env")
+            or file_values.get("provider_api_key_env")
+            or "DOOM_API_KEY"
+        )
+        api_key = env.get(str(api_key_env), "")
+        if not api_key:
+            raise ConfigError(f"credential environment variable {api_key_env} must be set")
 
         return Settings(
-            state_dir=Path(str(coerced["state_dir"])),
-            model_provider=str(coerced["model_provider"]),
-            model_name=str(coerced["model_name"]),
-            runtime=str(coerced["runtime"]),
-            semantic_retries=int(coerced["semantic_retries"]),
-            provider_api_key_env=cred_env,
-            gas_city_url=str(coerced.get("gas_city_url", "")),
-            gas_city_timeout=float(
-                coerced.get("gas_city_timeout", _DEFAULT_GAS_CITY_TIMEOUT)
-            ),
-            gas_city_max_retries=int(
-                coerced.get("gas_city_max_retries", _DEFAULT_GAS_CITY_MAX_RETRIES)
-            ),
-            _redactor=redactor,
+            state_dir=Path(str(resolved_state_dir)),
+            model_provider=str(resolved_provider),
+            model_name=str(resolved_model),
+            runtime=str(resolved_runtime),
+            semantic_retries=int(retries),
+            provider_api_key_env=str(api_key_env),
+            provider_order=provider_order_value,
+            forbidden_providers=forbidden_value,
+            allow_fallbacks=bool(allow),
+            request_timeout=float(timeout),
+            _api_key=api_key,
         )
 
-
-def load_config(
-    *,
-    state_dir: str | Path | None = None,
-    model_provider: str | None = None,
-    model_name: str | None = None,
-    runtime: str | None = None,
-    semantic_retries: int | None = None,
-    provider_api_key_env: str | None = None,
-    gas_city_url: str | None = None,
-    gas_city_timeout: float | None = None,
-    gas_city_max_retries: int | None = None,
-    config_file: str | Path | None = None,
-) -> Settings:
-    """Load configuration from the process environment."""
-    return ConfigLoader().load(
-        state_dir=state_dir,
-        model_provider=model_provider,
-        model_name=model_name,
-        runtime=runtime,
-        semantic_retries=semantic_retries,
-        provider_api_key_env=provider_api_key_env,
-        gas_city_url=gas_city_url,
-        gas_city_timeout=gas_city_timeout,
-        gas_city_max_retries=gas_city_max_retries,
-        config_file=config_file,
-    )
+    @staticmethod
+    def _read_config_file(path: str | Path | None) -> dict[str, Any]:
+        """Read a JSON config object, rejecting malformed files."""
+        if path is None:
+            return {}
+        file_path = Path(path)
+        try:
+            data = json.loads(file_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"invalid config file {file_path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ConfigError(f"invalid config file {file_path}: expected a JSON object")
+        return data

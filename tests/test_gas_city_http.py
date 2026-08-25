@@ -9,7 +9,7 @@ retry/timeout/error behavior is fully deterministic.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -37,7 +37,7 @@ class FakeResponse:
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> FakeResponse:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

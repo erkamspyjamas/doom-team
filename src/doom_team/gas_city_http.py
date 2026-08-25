@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 

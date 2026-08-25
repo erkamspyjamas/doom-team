@@ -178,9 +178,7 @@ class DurableApprovalPort(ApprovalPort):
             return False
         if record.decision is not True:
             return False
-        if (
-            record.contract_revision != self.contract_revision
-            or record.roadmap_revision != self.roadmap_revision
-        ):
-            return False
-        return True
+        return (
+            record.contract_revision == self.contract_revision
+            and record.roadmap_revision == self.roadmap_revision
+        )

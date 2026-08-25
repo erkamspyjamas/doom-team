@@ -78,7 +78,7 @@ class DurableEvidenceStore(EvidenceStore):
         with open(self.evidence_dir / f"{evidence_id}.json") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            raise ValueError(f"Evidence record {evidence_id} is not a dict")
+            raise TypeError(f"Evidence record {evidence_id} is not a dict")
         return data
 
     def evidence_for_candidate(self, candidate_id: str) -> list[dict[str, Any]]:

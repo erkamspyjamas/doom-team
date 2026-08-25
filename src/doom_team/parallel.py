@@ -9,9 +9,11 @@ runtime route via the InferenceTelemetryPort.
 from __future__ import annotations
 
 import datetime
+import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 from doom_team.domain import Attempt, Candidate, Evidence, Mission, TaskContract
 from doom_team.ports import InferenceTelemetryPort, RepositoryPort, WorkspacePort
@@ -164,7 +166,7 @@ class ParallelMissionRunner:
                 qa_verdict=qa_verdict,
                 reviewer_verdict=reviewer_verdict,
             )
-        except Exception as exc:  # pragma: no cover - defensive
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
             return TaskOutcome(
                 task_id=task.id,
                 candidate=None,

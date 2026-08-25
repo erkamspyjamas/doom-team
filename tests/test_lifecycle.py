@@ -93,7 +93,7 @@ def test_lifecycle_runs_qa_and_reviewer_and_persists_verdicts(tmp_path: Path) ->
 
 def test_lifecycle_rejects_stale_evidence(tmp_path: Path) -> None:
     ws = GitWorkspace(tmp_path / "workspaces")
-    candidate, evidence = _make_candidate_and_evidence(ws)
+    candidate, _ = _make_candidate_and_evidence(ws)
 
     # Create a second candidate with a different commit to make evidence stale
     other_ws = GitWorkspace(tmp_path / "other_workspaces")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -18,7 +18,9 @@ class Verdict:
     role: str
     decision: bool
     reason: str = ""
-    timestamp: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
+    timestamp: datetime.datetime = field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
 
 
 @runtime_checkable
