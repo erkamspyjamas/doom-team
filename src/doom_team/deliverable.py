@@ -20,7 +20,24 @@ from doom_team.subprocess_guard import run_guarded
 
 _TASK_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
 _BASELINE_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+_REVISION_SHA = _BASELINE_SHA
 _GIT_IDENTITY = ("doom-team", "team@doom.local")
+
+# `.git/info/attributes` outranks every in-tree `.gitattributes`, and lives
+# where workspace writes are refused. Pinning it means committed content
+# cannot hide itself from review (`-diff` rendering as "Binary files differ"),
+# nor make the checked-out bytes differ from the committed blob through eol
+# conversion, clean/smudge filters, or keyword expansion.
+_WORKSPACE_ATTRIBUTES = (
+    "* diff -text -filter -ident -export-subst -export-ignore "
+    "-working-tree-encoding\n"
+)
+
+
+def _write_workspace_attributes(repo: Path) -> None:
+    info_dir = repo / ".git" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "attributes").write_text(_WORKSPACE_ATTRIBUTES, encoding="utf-8")
 
 
 class DeliverableError(Exception):
@@ -71,6 +88,11 @@ class TaskWorkspace:
         if not relative or "\x00" in relative:
             raise DeliverableError("workspace file path must be non-empty and NUL-free")
         parts = Path(relative)
+        # Path(".") and Path("./") normalize to an EMPTY parts tuple, which
+        # would make every part-wise guard below vacuously true; reject such
+        # non-file paths explicitly rather than indexing into nothing.
+        if not parts.parts:
+            raise DeliverableError(f"workspace file path names no file: {relative}")
         if parts.is_absolute() or any(part in ("", ".", "..") for part in parts.parts):
             raise DeliverableError(f"unsafe workspace file path: {relative}")
         if parts.parts[0] == ".git":
@@ -108,16 +130,61 @@ class TaskWorkspace:
     def candidate_sha(self) -> str:
         return _git(self.path, "rev-parse", "HEAD").strip()
 
-    def changed_files(self) -> tuple[str, ...]:
-        """Files changed between the baseline and the candidate commit."""
-        output = _git(
-            self.path, "diff", "--name-only", f"{self.baseline_sha}..HEAD"
-        )
-        return tuple(line for line in output.splitlines() if line.strip())
+    def changed_files(self, revision: str = "HEAD") -> tuple[str, ...]:
+        """Files changed between the baseline and a candidate revision.
 
-    def diff(self) -> str:
-        """Complete textual diff between baseline and candidate."""
-        return _git(self.path, "diff", f"{self.baseline_sha}..HEAD")
+        NUL-separated so git never C-quotes non-ASCII or quote-bearing paths
+        into an unusable rendering.
+        """
+        output = _git(
+            self.path, "diff", "--name-only", "-z", f"{self.baseline_sha}..{revision}"
+        )
+        return tuple(name for name in output.split("\0") if name)
+
+    def files_in_revision(self, revision: str = "HEAD") -> tuple[str, ...]:
+        """Every path present in the given revision's tree (NUL-separated)."""
+        output = _git(self.path, "ls-tree", "-r", "--name-only", "-z", revision)
+        return tuple(name for name in output.split("\0") if name)
+
+    def diff(self, revision: str = "HEAD") -> str:
+        """Complete textual diff between baseline and a candidate revision.
+
+        The workspace pins ``.git/info/attributes`` (see
+        :meth:`DeliverableRepo.create_task_workspace`), which outranks any
+        in-tree ``.gitattributes``, so committed content can never suppress
+        or rewrite its own rendering here.
+        """
+        return _git(self.path, "diff", f"{self.baseline_sha}..{revision}")
+
+    def export_revision(self, destination: str | Path, revision: str) -> Path:
+        """Materialize a revision into a fresh, disposable repository copy.
+
+        Validation runs against this export rather than the live workspace:
+        code executed during validation therefore cannot alter - or even
+        reach - the reviewed candidate or its object store.
+        """
+        if not _REVISION_SHA.fullmatch(revision.strip()):
+            raise DeliverableError(f"export revision must be a commit SHA: {revision!r}")
+        dest = Path(destination).expanduser().resolve()
+        if dest.exists():
+            raise DeliverableError(f"export destination already exists: {dest}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # --no-checkout first: the pin must be in place BEFORE any file is
+        # materialized, or the clone's own checkout would apply the in-tree
+        # attributes it is meant to override.
+        _git(
+            dest.parent,
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "-q",
+            str(self.path),
+            str(dest),
+        )
+        _write_workspace_attributes(dest)
+        _git(dest, "checkout", "-q", "--detach", revision.strip())
+        _git(dest, "remote", "remove", "origin")
+        return dest
 
 
 @dataclass(frozen=True)
@@ -186,7 +253,16 @@ class DeliverableRepo:
         if object_type != "commit":
             raise DeliverableError(f"baseline {baseline} is not a commit")
         workspace_path = root / f"{task_id}-{uuid.uuid4().hex[:8]}"
-        _git(root, "clone", "--no-hardlinks", "-q", str(self.path), str(workspace_path))
+        _git(
+            root,
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "-q",
+            str(self.path),
+            str(workspace_path),
+        )
+        _write_workspace_attributes(workspace_path)
         _git(workspace_path, "config", "user.name", _GIT_IDENTITY[0])
         _git(workspace_path, "config", "user.email", _GIT_IDENTITY[1])
         _git(workspace_path, "checkout", "-q", baseline)
