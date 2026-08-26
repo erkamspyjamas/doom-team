@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from doom_team.config import ConfigError, Settings
 from doom_team.observability import Event, EventSink
 
 TIMEOUT = "timeout"
@@ -223,3 +224,44 @@ class OpenAICompatibleInferenceClient:
         if isinstance(provider_info, str):
             return provider_info
         return urlparse(self._base_url).netloc
+
+
+def build_inference_client(
+    settings: Settings,
+    *,
+    event_sink: EventSink | None = None,
+    producer_run: str = "",
+) -> OpenAICompatibleInferenceClient:
+    """Construct the canonical inference client from validated settings.
+
+    This is the single construction seam future planner, specialist runner,
+    QA, and Reviewer paths share. It performs no network call. Fail closed:
+    the client has no vendor default endpoint, so a configured
+    provider_base_url is required.
+    """
+    if not settings.provider_base_url:
+        raise ConfigError(
+            "provider_base_url must be configured to construct the inference client"
+        )
+    # The provider-routing body fragment is OpenRouter request vocabulary;
+    # sending it to a plain OpenAI-compatible endpoint would be rejected or
+    # silently misread, so the seam stays vendor-neutral by attaching it only
+    # when the configured provider actually speaks it.
+    routing = (
+        ProviderRouting(
+            order=settings.provider_order,
+            forbidden=settings.forbidden_providers,
+            allow_fallbacks=settings.allow_fallbacks,
+        )
+        if settings.model_provider.strip().lower() == "openrouter"
+        else None
+    )
+    return OpenAICompatibleInferenceClient(
+        settings.provider_base_url,
+        settings._api_key,
+        settings.model_name,
+        timeout=settings.request_timeout,
+        routing=routing,
+        event_sink=event_sink,
+        producer_run=producer_run,
+    )

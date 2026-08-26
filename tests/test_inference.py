@@ -182,3 +182,102 @@ def test_config_provider_order_from_env(tmp_path: object, monkeypatch: pytest.Mo
 def test_client_implements_inference_port() -> None:
     client = _make_client({"behavior": "success"})
     assert isinstance(client, InferencePort)
+
+
+# build_inference_client factory (T1): the single canonical construction seam
+
+
+def _factory_settings(tmp_path, monkeypatch, **overrides):
+    from doom_team.config import ConfigLoader
+
+    monkeypatch.setenv("DOOM_API_KEY", "factory-secret")
+    kwargs = {
+        "state_dir": str(tmp_path / "state"),
+        "model_provider": "openrouter",
+        "model_name": "factory-model",
+        "provider_base_url": "https://router.example/api",
+    }
+    kwargs.update(overrides)
+    return ConfigLoader().load(**kwargs)
+
+
+def test_factory_constructs_existing_client_type(tmp_path, monkeypatch) -> None:
+    from doom_team.inference import build_inference_client
+
+    client = build_inference_client(_factory_settings(tmp_path, monkeypatch))
+    assert isinstance(client, OpenAICompatibleInferenceClient)
+
+
+def test_factory_preserves_settings_configuration(tmp_path, monkeypatch) -> None:
+    from doom_team.inference import build_inference_client
+
+    settings = _factory_settings(
+        tmp_path,
+        monkeypatch,
+        request_timeout=12.5,
+        provider_order="Alpha,Beta",
+        forbidden_providers="Gamma",
+        allow_fallbacks=False,
+    )
+    client = build_inference_client(settings)
+    assert client._base_url == "https://router.example/api"
+    assert client._model == "factory-model"
+    assert client._timeout == 12.5
+    assert client._routing is not None
+    assert client._routing.order == ("Alpha", "Beta")
+    assert client._routing.forbidden == ("Gamma",)
+    assert client._routing.allow_fallbacks is False
+
+
+def test_factory_applies_custom_base_url(tmp_path, monkeypatch) -> None:
+    from doom_team.inference import build_inference_client
+
+    settings = _factory_settings(
+        tmp_path, monkeypatch, provider_base_url="https://custom.example/v9/"
+    )
+    client = build_inference_client(settings)
+    assert client._base_url == "https://custom.example/v9"
+
+
+def test_factory_fails_closed_without_base_url(tmp_path, monkeypatch) -> None:
+    from doom_team.config import ConfigError
+    from doom_team.inference import build_inference_client
+
+    settings = _factory_settings(tmp_path, monkeypatch, provider_base_url=None)
+    assert settings.provider_base_url is None
+    with pytest.raises(ConfigError, match="provider_base_url"):
+        build_inference_client(settings)
+
+
+def test_factory_performs_no_network_call(tmp_path, monkeypatch) -> None:
+    import urllib.request
+
+    from doom_team.inference import build_inference_client
+
+    def _explode(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("network call during construction")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+    client = build_inference_client(_factory_settings(tmp_path, monkeypatch))
+    assert isinstance(client, OpenAICompatibleInferenceClient)
+
+
+def test_factory_credential_not_in_ordinary_serialization(tmp_path, monkeypatch) -> None:
+    import json as _json
+
+    from doom_team.inference import build_inference_client
+
+    settings = _factory_settings(tmp_path, monkeypatch)
+    build_inference_client(settings)
+    assert "factory-secret" not in _json.dumps(settings.as_evidence_dict())
+    assert "factory-secret" not in settings.log_line()
+
+
+def test_factory_omits_openrouter_routing_for_other_providers(
+    tmp_path, monkeypatch
+) -> None:
+    from doom_team.inference import build_inference_client
+
+    settings = _factory_settings(tmp_path, monkeypatch, model_provider="internal-gateway")
+    client = build_inference_client(settings)
+    assert client._routing is None

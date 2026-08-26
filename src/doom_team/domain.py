@@ -54,6 +54,7 @@ class TaskContract:
     instruction: str
     acceptance_criteria: tuple[str, ...]
     dependencies: tuple[str, ...] = ()
+    required_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         id_ = self.id.strip()
@@ -80,13 +81,25 @@ class TaskContract:
         if len(set(deps)) != len(deps):
             raise ValueError("Dependencies must be unique")
 
+        # Capability identifiers only record WHAT a task requires; specialist
+        # selection semantics belong to the routing layer, not the domain.
+        capabilities = tuple(c.strip() for c in self.required_capabilities)
+        if any(not c for c in capabilities):
+            raise ValueError("Required capabilities must not be empty strings")
+        if len(set(capabilities)) != len(capabilities):
+            raise ValueError("Required capabilities must be unique")
+        if len(capabilities) > 8:
+            raise ValueError("Required capabilities cannot exceed 8 entries")
+
         criteria = tuple(sorted(criteria))
         deps = tuple(sorted(deps))
+        capabilities = tuple(sorted(capabilities))
         object.__setattr__(self, "id", id_)
         object.__setattr__(self, "objective_id", obj_id)
         object.__setattr__(self, "instruction", instr)
         object.__setattr__(self, "acceptance_criteria", criteria)
         object.__setattr__(self, "dependencies", deps)
+        object.__setattr__(self, "required_capabilities", capabilities)
 
 
 @dataclass(frozen=True)

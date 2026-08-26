@@ -137,3 +137,87 @@ def test_valid_mission_with_dependencies_passes() -> None:
     task_c = _make_task(task_id="task-c", dependencies=("task-a", "task-b"))
     mission = Mission(id="mission-1", objective=obj, tasks=(task_c, task_a, task_b))
     assert [t.id for t in mission.tasks] == ["task-a", "task-b", "task-c"]
+
+
+# Required-capability tests (T1: the domain records WHAT a task requires;
+# specialist selection semantics belong to the routing layer)
+
+
+def test_task_without_required_capabilities_still_works() -> None:
+    task = _make_task()
+    assert task.required_capabilities == ()
+
+
+def test_required_capability_survives_normalization() -> None:
+    task = TaskContract(
+        id="task-1",
+        objective_id="obj-1",
+        instruction="Bootstrap",
+        acceptance_criteria=("c1",),
+        required_capabilities=("  backend.python  ",),
+    )
+    assert task.required_capabilities == ("backend.python",)
+
+
+def test_multiple_required_capabilities_deterministic_order() -> None:
+    task = TaskContract(
+        id="task-1",
+        objective_id="obj-1",
+        instruction="Bootstrap",
+        acceptance_criteria=("c1",),
+        required_capabilities=("testing", "backend.python", "database.sqlite"),
+    )
+    assert task.required_capabilities == (
+        "backend.python",
+        "database.sqlite",
+        "testing",
+    )
+
+
+def test_duplicate_required_capabilities_rejected() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        TaskContract(
+            id="task-1",
+            objective_id="obj-1",
+            instruction="Bootstrap",
+            acceptance_criteria=("c1",),
+            required_capabilities=("testing", " testing "),
+        )
+
+
+def test_empty_required_capability_rejected() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        TaskContract(
+            id="task-1",
+            objective_id="obj-1",
+            instruction="Bootstrap",
+            acceptance_criteria=("c1",),
+            required_capabilities=("testing", "  "),
+        )
+
+
+def test_required_capability_bound_enforced() -> None:
+    with pytest.raises(ValueError, match="exceed"):
+        TaskContract(
+            id="task-1",
+            objective_id="obj-1",
+            instruction="Bootstrap",
+            acceptance_criteria=("c1",),
+            required_capabilities=tuple(f"cap-{i}" for i in range(9)),
+        )
+
+
+def test_required_capabilities_survive_asdict_roundtrip() -> None:
+    from dataclasses import asdict
+
+    task = TaskContract(
+        id="task-1",
+        objective_id="obj-1",
+        instruction="Bootstrap",
+        acceptance_criteria=("c1",),
+        dependencies=(),
+        required_capabilities=("backend.python", "testing"),
+    )
+    restored = TaskContract(**asdict(task))
+    assert restored == task
+    assert restored.required_capabilities == ("backend.python", "testing")

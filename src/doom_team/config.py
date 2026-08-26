@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 class ConfigError(Exception):
@@ -62,6 +63,7 @@ class Settings:
     forbidden_providers: tuple[str, ...] = ("Relace",)
     allow_fallbacks: bool = True
     request_timeout: float = 60.0
+    provider_base_url: str | None = None
     _api_key: str = field(repr=False, default="")
 
     def redact(self, value: str) -> str:
@@ -84,7 +86,8 @@ class Settings:
             f"provider_order={self.provider_order} "
             f"forbidden_providers={self.forbidden_providers} "
             f"allow_fallbacks={self.allow_fallbacks} "
-            f"request_timeout={self.request_timeout} credential=[REDACTED]"
+            f"request_timeout={self.request_timeout} "
+            f"provider_base_url={self.provider_base_url} credential=[REDACTED]"
         )
 
     def as_evidence_dict(self) -> dict[str, Any]:
@@ -100,6 +103,7 @@ class Settings:
             "forbidden_providers": list(self.forbidden_providers),
             "allow_fallbacks": self.allow_fallbacks,
             "request_timeout": self.request_timeout,
+            "provider_base_url": self.provider_base_url,
             "credential": "[REDACTED]",
         }
 
@@ -112,7 +116,8 @@ class Settings:
             f"provider_order={self.provider_order!r}, "
             f"forbidden_providers={self.forbidden_providers!r}, "
             f"allow_fallbacks={self.allow_fallbacks!r}, "
-            f"request_timeout={self.request_timeout!r}, credential=[REDACTED])"
+            f"request_timeout={self.request_timeout!r}, "
+            f"provider_base_url={self.provider_base_url!r}, credential=[REDACTED])"
         )
 
 
@@ -132,6 +137,7 @@ class ConfigLoader:
         forbidden_providers: str | None = None,
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
+        provider_base_url: str | None = None,
         config_file: str | Path | None = None,
     ) -> Settings:
         """Load and validate settings; raises :class:`ConfigError` on failure."""
@@ -227,6 +233,34 @@ class ConfigLoader:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
             raise ConfigError(f"request_timeout must be a number: {timeout!r}")
 
+        base_url_raw = (
+            provider_base_url
+            or env_value("provider_base_url")
+            or file_values.get("provider_base_url")
+        )
+        base_url_value: str | None
+        if base_url_raw is None:
+            base_url_value = None
+        else:
+            base_url_value = str(base_url_raw).strip()
+            parsed = urlparse(base_url_value)
+            if parsed.username is not None or parsed.password is not None:
+                # Never echo the value: userinfo would be a credential, and
+                # secrets must stay in the environment, not in URLs, logs,
+                # or evidence.
+                raise ConfigError(
+                    "provider_base_url must not embed credentials; "
+                    "keep secrets in the environment"
+                )
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or any(ch.isspace() for ch in base_url_value)
+            ):
+                raise ConfigError(
+                    f"provider_base_url must be an http(s) URL: {base_url_value!r}"
+                )
+
         api_key_env = (
             provider_api_key_env
             or env_value("provider_api_key_env")
@@ -248,6 +282,7 @@ class ConfigLoader:
             forbidden_providers=forbidden_value,
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
+            provider_base_url=base_url_value,
             _api_key=api_key,
         )
 

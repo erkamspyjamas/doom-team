@@ -197,3 +197,65 @@ def test_configuration_reference_document_exists() -> None:
     content = doc.read_text()
     assert "Precedence" in content
     assert "DOOM_API_KEY" in content
+
+
+# provider_base_url (T1): one common inference configuration seam
+
+
+def test_provider_base_url_absent_preserves_legacy_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret-value")
+    settings = ConfigLoader().load(**_valid_kwargs(tmp_path))
+    assert settings.provider_base_url is None
+
+
+def test_provider_base_url_resolved_from_env_and_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret-value")
+    monkeypatch.setenv("DOOM_PROVIDER_BASE_URL", "https://env.example/api")
+    from_env = ConfigLoader().load(**_valid_kwargs(tmp_path))
+    assert from_env.provider_base_url == "https://env.example/api"
+    explicit = ConfigLoader().load(
+        provider_base_url="https://explicit.example/api", **_valid_kwargs(tmp_path)
+    )
+    assert explicit.provider_base_url == "https://explicit.example/api"
+
+
+def test_provider_base_url_malformed_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret-value")
+    for bad in ("ftp://nope.example", "not-a-url", "https://", "http://a b.example"):
+        with pytest.raises(ConfigError, match="provider_base_url"):
+            ConfigLoader().load(provider_base_url=bad, **_valid_kwargs(tmp_path))
+
+
+def test_provider_base_url_kept_separate_from_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "super-secret-value")
+    settings = ConfigLoader().load(
+        provider_base_url="https://router.example/api", **_valid_kwargs(tmp_path)
+    )
+    assert "super-secret-value" not in settings.log_line()
+    assert "super-secret-value" not in repr(settings)
+    evidence = settings.as_evidence_dict()
+    assert evidence["provider_base_url"] == "https://router.example/api"
+    assert "super-secret-value" not in json.dumps(evidence)
+
+
+def test_provider_base_url_with_embedded_credentials_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret-value")
+    for bad in (
+        "https://user:sk-leaky-token@router.example/api",
+        "https://sk-leaky-token@router.example/api",
+    ):
+        with pytest.raises(ConfigError) as raised:
+            ConfigLoader().load(provider_base_url=bad, **_valid_kwargs(tmp_path))
+        assert "credential" in str(raised.value)
+        # The rejection must never echo the credential-bearing URL.
+        assert "sk-leaky-token" not in str(raised.value)

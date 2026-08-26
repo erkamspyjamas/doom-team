@@ -37,6 +37,7 @@ credential is missing. There are no defaults for required values.
 | `forbidden_providers` | no | `DOOM_FORBIDDEN_PROVIDERS` | Comma-separated forbidden providers (default `Relace`) |
 | `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
+| `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
 
 ## Credentials and secrets
 
