@@ -296,3 +296,157 @@ def test_serve_graceful_shutdown_and_restart_safe(tmp_path: Path, cli_env: dict[
         if proc2.poll() is None:
             proc2.kill()
             proc2.wait()
+
+
+# `doom-team run` plan-only vertical (T2): planner + routing wired into the CLI
+
+
+class _PlanResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakePlanClient:
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self.calls = 0
+
+    def complete(self, messages):
+        self.calls += 1
+        return _PlanResponse(self._content)
+
+
+def _plan_json() -> str:
+    import json
+
+    return json.dumps(
+        {
+            "tasks": [
+                {
+                    "task_id": "api-foundation",
+                    "description": "Implement the REST API skeleton",
+                    "dependencies": [],
+                    "required_capabilities": ["backend.python"],
+                    "acceptance_criteria": ["handlers exist"],
+                },
+                {
+                    "task_id": "sqlite-storage",
+                    "description": "Persist mappings in SQLite",
+                    "dependencies": ["api-foundation"],
+                    "required_capabilities": ["database.sqlite", "backend.python"],
+                    "acceptance_criteria": ["mappings survive restart"],
+                },
+                {
+                    "task_id": "automated-tests",
+                    "description": "Add automated tests",
+                    "dependencies": ["sqlite-storage"],
+                    "required_capabilities": ["testing"],
+                    "acceptance_criteria": ["pytest passes"],
+                },
+                {
+                    "task_id": "readme-docs",
+                    "description": "Write the README",
+                    "dependencies": ["automated-tests"],
+                    "required_capabilities": ["documentation"],
+                    "acceptance_criteria": ["README documents install and run"],
+                },
+            ]
+        }
+    )
+
+
+@pytest.fixture
+def run_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    monkeypatch.setenv("DOOM_API_KEY", "run-secret")
+    monkeypatch.setenv("DOOM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("DOOM_MODEL_PROVIDER", "openrouter")
+    monkeypatch.setenv("DOOM_MODEL_NAME", "planner-model")
+    monkeypatch.setenv("DOOM_PROVIDER_BASE_URL", "https://router.example/api")
+    return dict(os.environ)
+
+
+def test_run_plan_only_routes_through_canonical_client_path(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    import doom_team.cli as cli_module
+
+    fake = _FakePlanClient(_plan_json())
+    captured_settings = {}
+
+    def fake_factory(settings, **kwargs):
+        captured_settings["settings"] = settings
+        return fake
+
+    monkeypatch.setattr(cli_module, "build_inference_client", fake_factory)
+    rc = main(["run", "Build a small URL shortener REST API", "--plan-only"])
+    assert rc == 0
+    assert fake.calls == 1
+    assert captured_settings["settings"].provider_base_url == "https://router.example/api"
+    output = json.loads(capsys.readouterr().out)
+    assert output["objective"]["description"] == "Build a small URL shortener REST API"
+    assert len(output["tasks"]) == 4
+    assert len(output["routing"]) == 4
+    routed = {d["task_id"]: d["specialist_id"] for d in output["routing"]}
+    assert routed["api-foundation"] == "python_backend"
+    assert routed["sqlite-storage"] == "sqlite_persistence"
+    assert routed["automated-tests"] == "test_engineer"
+    assert routed["readme-docs"] == "technical_writer"
+    # No secrets in the plan output.
+    assert "run-secret" not in json.dumps(output)
+    # Plan-only is ephemeral: no state or workspace mutation.
+    assert not (tmp_path / "state").exists()
+
+
+def test_run_without_plan_only_fails_explicitly(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import doom_team.cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module,
+        "build_inference_client",
+        lambda settings, **kwargs: _FakePlanClient(_plan_json()),
+    )
+    rc = main(["run", "Build something"])
+    assert rc == 4
+    err = capsys.readouterr().err
+    assert "execution runtime not implemented yet" in err
+    assert not (tmp_path / "state").exists()
+
+
+def test_run_plan_only_malformed_plan_fails_closed(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import doom_team.cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module,
+        "build_inference_client",
+        lambda settings, **kwargs: _FakePlanClient("not json at all"),
+    )
+    rc = main(["run", "Build something", "--plan-only"])
+    assert rc == 4
+    assert "planning error" in capsys.readouterr().err
+
+
+def test_run_plan_only_without_base_url_is_config_error(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("DOOM_PROVIDER_BASE_URL")
+    rc = main(["run", "Build something", "--plan-only"])
+    assert rc == 1
+    assert "provider_base_url" in capsys.readouterr().err

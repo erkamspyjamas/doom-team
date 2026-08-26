@@ -1,17 +1,19 @@
 """Command-line interface for the Doom Team service.
 
-Provides subcommands: serve, status, doctor, approve, backup, restore.
+Provides subcommands: run, serve, status, doctor, approve, backup, restore.
 
-Exit codes (documented in docs/CLI.md):
+Exit codes:
     0 - success / healthy
     1 - configuration error
     2 - state or store error
     3 - approval failure
+    4 - run failure (planning, routing, or unavailable execution runtime)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
@@ -23,6 +25,9 @@ from doom_team.approval import DurableApprovalPort
 from doom_team.backup import backup_state, restore_state
 from doom_team.config import ConfigError, ConfigLoader, Settings
 from doom_team.evidence import DurableEvidenceStore
+from doom_team.inference import build_inference_client
+from doom_team.planner import Planner, PlanningError
+from doom_team.routing import RoutingError, route_task
 from doom_team.observability import (
     DurableEventSink,
     Event,
@@ -36,6 +41,7 @@ EXIT_SUCCESS = 0
 EXIT_CONFIG_ERROR = 1
 EXIT_STATE_ERROR = 2
 EXIT_APPROVAL_ERROR = 3
+EXIT_RUN_ERROR = 4
 
 
 def _add_state_dir(parser: argparse.ArgumentParser) -> None:
@@ -60,6 +66,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_state_dir(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser(
+        "run", help="Run a natural-language software objective through Doom Team"
+    )
+    _add_state_dir(run_parser)
+    run_parser.add_argument("objective", help="Natural-language software objective")
+    run_parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Plan and route the objective without executing any work",
+    )
 
     serve_parser = subparsers.add_parser(
         "serve", help="Run the service loop with graceful shutdown"
@@ -129,6 +146,51 @@ def _load_settings(args: argparse.Namespace) -> Settings:
 
 def _make_event_sink(settings: Settings) -> DurableEventSink:
     return DurableEventSink(settings.state_dir, secret_values=settings.redaction_secrets())
+
+
+def _cmd_run(settings: Settings, objective: str, *, plan_only: bool) -> int:
+    """Plan and route an objective; execution arrives with the full runtime.
+
+    Plan-only is deliberately ephemeral: it creates no project repository, no
+    workspace, and no durable mission state, and it never executes work.
+    """
+    if not plan_only:
+        print(
+            "execution runtime not implemented yet: use --plan-only",
+            file=sys.stderr,
+        )
+        return EXIT_RUN_ERROR
+    try:
+        client = build_inference_client(settings)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    try:
+        mission = Planner(client).plan(objective)
+        decisions = [route_task(task) for task in mission.tasks]
+    except (PlanningError, RoutingError) as exc:
+        print(f"planning error: {exc}", file=sys.stderr)
+        return EXIT_RUN_ERROR
+    output = {
+        "mission_id": mission.id,
+        "objective": {
+            "id": mission.objective.id,
+            "description": mission.objective.description,
+        },
+        "tasks": [
+            {
+                "task_id": task.id,
+                "instruction": task.instruction,
+                "dependencies": list(task.dependencies),
+                "required_capabilities": list(task.required_capabilities),
+                "acceptance_criteria": list(task.acceptance_criteria),
+            }
+            for task in mission.tasks
+        ],
+        "routing": [decision.as_dict() for decision in decisions],
+    }
+    print(json.dumps(output, sort_keys=True))
+    return EXIT_SUCCESS
 
 
 def _cmd_serve(settings: Settings) -> int:
@@ -300,6 +362,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
+    if args.command == "run":
+        return _cmd_run(settings, args.objective, plan_only=args.plan_only)
     if args.command == "serve":
         return _cmd_serve(settings)
     if args.command == "status":
