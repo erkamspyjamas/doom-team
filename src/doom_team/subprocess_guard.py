@@ -92,6 +92,7 @@ def run_guarded(
     check: bool = True,
     text: bool = True,
     capture_output: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """Run a subprocess with argv-only execution, sanitized env, and network isolation."""
     cmd = list(args)
@@ -107,4 +108,5 @@ def run_guarded(
         check=check,
         text=text,
         capture_output=capture_output,
+        timeout=timeout,
     )

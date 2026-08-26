@@ -1,0 +1,233 @@
+"""Deliverable project repository and isolated task workspaces.
+
+The standalone mission needs one real destination repository that accumulates
+accepted work, plus per-task isolated workspaces derived from an explicit
+baseline. Workspaces are full local clones: changes there can never mutate
+the deliverable until an explicit fast-forward-only integration. All Git
+subprocesses run through the subprocess guard (argv-only, sanitized
+environment). Nothing here pushes, configures remotes, merges external
+branches, or deploys - integration is local and fail-closed.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+from doom_team.subprocess_guard import run_guarded
+
+_TASK_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+_BASELINE_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+_GIT_IDENTITY = ("doom-team", "team@doom.local")
+
+
+class DeliverableError(Exception):
+    """Raised when a deliverable repository operation is unsafe or invalid."""
+
+
+def _git(path: Path, *args: str) -> str:
+    completed = run_guarded(
+        ["git", *args], cwd=str(path), check=False, text=True, capture_output=True
+    )
+    if completed.returncode != 0:
+        raise DeliverableError(
+            f"git {args[0]} failed in {path}: {completed.stderr.strip()[:500]}"
+        )
+    return str(completed.stdout)
+
+
+def _source_tree_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _safe_destination(destination: str | Path) -> Path:
+    raw = str(destination)
+    if not raw.strip() or "\x00" in raw:
+        raise DeliverableError("destination path must be a non-empty safe path")
+    dest = Path(destination).expanduser().resolve()
+    if dest == Path("/") or dest == Path.home():
+        raise DeliverableError("destination path is too broad to be a project repo")
+    source_root = _source_tree_root()
+    if dest.is_relative_to(source_root):
+        raise DeliverableError(
+            "destination must be outside the Doom Team source tree"
+        )
+    return dest
+
+
+@dataclass(frozen=True)
+class TaskWorkspace:
+    """An isolated clone-based workspace for one task."""
+
+    task_id: str
+    path: Path
+    baseline_sha: str
+    branch: str
+
+    def write_file(self, relative: str, content: str) -> Path:
+        """Write one file at a safe repository-relative path."""
+        if not relative or "\x00" in relative:
+            raise DeliverableError("workspace file path must be non-empty and NUL-free")
+        parts = Path(relative)
+        if parts.is_absolute() or any(part in ("", ".", "..") for part in parts.parts):
+            raise DeliverableError(f"unsafe workspace file path: {relative}")
+        if parts.parts[0] == ".git":
+            raise DeliverableError("workspace files cannot target Git metadata")
+        target = (self.path / parts).resolve()
+        if not target.is_relative_to(self.path.resolve()):
+            raise DeliverableError(f"workspace file path escapes the workspace: {relative}")
+        current = self.path.resolve()
+        for part in parts.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise DeliverableError(f"workspace file path crosses a symlink: {relative}")
+        # The final component too: an existing symlink AT the target would
+        # redirect the write (e.g. into .git) even when its destination
+        # resolves inside the workspace.
+        if (self.path / parts).is_symlink():
+            raise DeliverableError(f"workspace file path is a symlink: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return target
+
+    def is_clean(self) -> bool:
+        return not _git(self.path, "status", "--porcelain").strip()
+
+    def commit_candidate(self, message: str) -> str:
+        """Stage everything and commit; returns the candidate SHA."""
+        if not message.strip():
+            raise DeliverableError("candidate commit message must not be empty")
+        _git(self.path, "add", "-A")
+        if not _git(self.path, "status", "--porcelain").strip():
+            raise DeliverableError("nothing to commit in the task workspace")
+        _git(self.path, "commit", "-q", "-m", message)
+        return self.candidate_sha()
+
+    def candidate_sha(self) -> str:
+        return _git(self.path, "rev-parse", "HEAD").strip()
+
+    def changed_files(self) -> tuple[str, ...]:
+        """Files changed between the baseline and the candidate commit."""
+        output = _git(
+            self.path, "diff", "--name-only", f"{self.baseline_sha}..HEAD"
+        )
+        return tuple(line for line in output.splitlines() if line.strip())
+
+    def diff(self) -> str:
+        """Complete textual diff between baseline and candidate."""
+        return _git(self.path, "diff", f"{self.baseline_sha}..HEAD")
+
+
+@dataclass(frozen=True)
+class DeliverableRepo:
+    """The destination repository accumulating accepted mission work."""
+
+    path: Path
+
+    @classmethod
+    def create(cls, destination: str | Path) -> "DeliverableRepo":
+        """Initialize a brand-new deliverable repository fail-closed."""
+        dest = _safe_destination(destination)
+        if dest.exists():
+            if not dest.is_dir():
+                raise DeliverableError(f"destination {dest} exists and is not a directory")
+            if any(dest.iterdir()):
+                raise DeliverableError(f"destination {dest} is not empty")
+        else:
+            if not dest.parent.exists():
+                raise DeliverableError(f"destination parent {dest.parent} does not exist")
+            dest.mkdir()
+        _git(dest, "init", "-q", "-b", "main")
+        _git(dest, "config", "user.name", _GIT_IDENTITY[0])
+        _git(dest, "config", "user.email", _GIT_IDENTITY[1])
+        _git(dest, "commit", "-q", "--allow-empty", "-m", "doom-team: initial baseline")
+        return cls(path=dest)
+
+    @classmethod
+    def open(cls, destination: str | Path) -> "DeliverableRepo":
+        dest = _safe_destination(destination)
+        if not (dest / ".git").is_dir():
+            raise DeliverableError(f"{dest} is not a deliverable repository")
+        return cls(path=dest)
+
+    def head(self) -> str:
+        return _git(self.path, "rev-parse", "HEAD").strip()
+
+    def is_clean(self) -> bool:
+        return not _git(self.path, "status", "--porcelain").strip()
+
+    def remotes(self) -> tuple[str, ...]:
+        output = _git(self.path, "remote")
+        return tuple(line for line in output.splitlines() if line.strip())
+
+    def create_task_workspace(
+        self,
+        task_id: str,
+        workspaces_root: str | Path,
+        *,
+        baseline_sha: str | None = None,
+    ) -> TaskWorkspace:
+        """Clone an isolated task workspace at an explicit baseline."""
+        if not _TASK_ID.fullmatch(task_id):
+            raise DeliverableError(f"unsafe task id for workspace: {task_id!r}")
+        root = Path(workspaces_root).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        if root.is_relative_to(self.path.resolve()):
+            raise DeliverableError("workspaces root cannot live inside the deliverable repo")
+        baseline = (baseline_sha or self.head()).strip()
+        # Strict hex only: a dash-prefixed or symbolic value handed to git
+        # would be parsed as an option (option injection) or resolve to the
+        # wrong baseline; verify it names a real commit before any checkout.
+        if not _BASELINE_SHA.fullmatch(baseline):
+            raise DeliverableError(f"baseline must be a commit SHA: {baseline!r}")
+        object_type = _git(self.path, "cat-file", "-t", baseline).strip()
+        if object_type != "commit":
+            raise DeliverableError(f"baseline {baseline} is not a commit")
+        workspace_path = root / f"{task_id}-{uuid.uuid4().hex[:8]}"
+        _git(root, "clone", "--no-hardlinks", "-q", str(self.path), str(workspace_path))
+        _git(workspace_path, "config", "user.name", _GIT_IDENTITY[0])
+        _git(workspace_path, "config", "user.email", _GIT_IDENTITY[1])
+        _git(workspace_path, "checkout", "-q", baseline)
+        branch = f"task/{task_id}"
+        _git(workspace_path, "checkout", "-q", "-b", branch)
+        # The clone keeps an origin pointing at the deliverable; remove it so
+        # no workspace operation can ever push back implicitly.
+        _git(workspace_path, "remote", "remove", "origin")
+        return TaskWorkspace(
+            task_id=task_id,
+            path=workspace_path,
+            baseline_sha=baseline,
+            branch=branch,
+        )
+
+    def integrate_candidate(self, workspace: TaskWorkspace) -> str:
+        """Fast-forward-only local integration of a committed candidate.
+
+        Fail closed: a dirty deliverable, a dirty workspace, or a non-ff
+        candidate is rejected. This is mechanical advancement - acceptance
+        semantics (QA/Reviewer/approval) live above this layer.
+        """
+        if not self.is_clean():
+            raise DeliverableError("deliverable repository is dirty; refusing to integrate")
+        # Untracked artifacts (test caches, __pycache__) cannot change the
+        # fetched candidate commit; only uncommitted TRACKED changes would be
+        # silently lost, so exactly those block integration.
+        tracked_dirt = _git(
+            workspace.path, "status", "--porcelain", "--untracked-files=no"
+        ).strip()
+        if tracked_dirt:
+            raise DeliverableError(
+                "task workspace has uncommitted tracked changes; "
+                "commit the candidate first"
+            )
+        _git(self.path, "fetch", "-q", str(workspace.path), workspace.branch)
+        try:
+            _git(self.path, "merge", "--ff-only", "-q", "FETCH_HEAD")
+        except DeliverableError as exc:
+            raise DeliverableError(
+                f"candidate for task {workspace.task_id} is not a fast-forward "
+                f"of the deliverable head: {exc}"
+            ) from exc
+        return self.head()
