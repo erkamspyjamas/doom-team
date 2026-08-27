@@ -89,19 +89,46 @@ class ValidationResult:
         }
 
 
+# How much of the END of an oversized capture survives. Tooling prints its
+# verdict last - pytest's failure summary and the raised exception are the
+# final lines - so a head-only bound here would amputate exactly the content
+# every later remediation needs, no matter how carefully the ledger clips.
+MAX_OUTPUT_TAIL_CHARS = 4_000
+_CAPTURE_CLIP_MARKER = "\n[... output clipped ...]\n"
+
+
 def _bounded(text: str) -> tuple[str, bool]:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text, False
-    return text[:MAX_OUTPUT_CHARS], True
+    head = MAX_OUTPUT_CHARS - MAX_OUTPUT_TAIL_CHARS - len(_CAPTURE_CLIP_MARKER)
+    if head <= 0:
+        return text[-MAX_OUTPUT_CHARS:], True
+    return (
+        text[:head] + _CAPTURE_CLIP_MARKER + text[-MAX_OUTPUT_TAIL_CHARS:],
+        True,
+    )
 
 
 def _bounded_from_file(handle: Any) -> tuple[str, bool]:
-    """Read a bounded, tolerantly-decoded prefix of a spill file."""
+    """Read a bounded, tolerantly-decoded head AND tail of a spill file."""
     handle.flush()
     size = handle.seek(0, 2)
+    head_bytes = MAX_OUTPUT_CHARS * 4
     handle.seek(0)
-    raw = handle.read(MAX_OUTPUT_CHARS * 4)
-    decoded = raw.decode("utf-8", errors="replace")
+    raw = handle.read(head_bytes)
+    if size > len(raw):
+        # The file outgrew the head window: fetch its real end as well, so
+        # the terminal error lines survive into the bounded text below.
+        tail_bytes = MAX_OUTPUT_TAIL_CHARS * 4
+        handle.seek(max(0, size - tail_bytes))
+        tail_raw = handle.read(tail_bytes)
+        decoded = (
+            raw.decode("utf-8", errors="replace")
+            + _CAPTURE_CLIP_MARKER
+            + tail_raw.decode("utf-8", errors="replace")
+        )
+    else:
+        decoded = raw.decode("utf-8", errors="replace")
     text, char_truncated = _bounded(decoded)
     return text, char_truncated or size > len(raw)
 

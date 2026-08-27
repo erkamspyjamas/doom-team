@@ -57,6 +57,7 @@ from doom_team.mission import (
     MissionStore,
     attempts_remaining,
     max_attempts_for,
+    quality_reserve_available,
     new_mission_id,
     rebuild_task_contracts,
     remediation_context,
@@ -513,13 +514,15 @@ class MissionRunner:
                     return outcome
                 return None
 
-            if attempts_remaining(record, task.id) <= 0:
+            if attempts_remaining(record, task.id) <= 0 and not quality_reserve_available(
+                record, task.id
+            ):
                 last = task_record.attempts[-1] if task_record.attempts else None
                 return self._blocked(
                     mission_id,
                     "recovery_exhausted",
                     (
-                        f"task {task.id} used all {record.max_attempts_per_task} "
+                        f"task {task.id} used all {len(task_record.attempts)} "
                         f"attempts; last outcome {task_record.state}"
                         + (f": {last.failure_detail}" if last and last.failure_detail else "")
                     ),

@@ -35,6 +35,7 @@ import datetime
 import fcntl
 import os
 import re
+import sys
 import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -100,6 +101,11 @@ MAX_LEDGER_TEXT_CHARS = 2_000
 MAX_LEDGER_BLOCKERS = 20
 MAX_REMEDIATION_CHARS = 2_000
 
+# Passed to a redact-then-clip callable when the caller bounds the text
+# itself afterwards: redaction must see the whole output, and a premature
+# head clip would reintroduce exactly the tail-amputation this replaces.
+_NO_CLIP = sys.maxsize
+
 _MISSION_ID = re.compile(r"^mission-[0-9a-f]{6,32}-[0-9a-f]{8}$")
 
 # Reserved ApprovalPort action namespace for mission decisions.
@@ -123,6 +129,22 @@ def max_attempts_for(semantic_retries: int) -> int:
 
 
 DEFAULT_MAX_ATTEMPTS_PER_TASK = 1 + DEFAULT_SEMANTIC_RETRIES
+
+# One dedicated remediation attempt so a task's FIRST QA/Reviewer blocker is
+# never terminal-by-position. Quality gates only run on validation-passing
+# candidates, so under a shared budget their first verdict can land on the
+# last ordinary slot with actionable feedback no attempt can ever consume.
+# The reserve is pinned into each mission at creation (records written before
+# it existed load as 0), activates only when the first quality blocker IS the
+# final ordinary attempt, and can activate at most once per task - the hard
+# ceiling is max_attempts_per_task + 1, never more.
+DEFAULT_QUALITY_RESERVE_PER_TASK = 1
+
+# Validation output keeps BOTH ends: pytest prints the failure summary and
+# exception last, so a head-only clip - and any later tail taken from it -
+# deletes exactly the line a remediation needs.
+MAX_LEDGER_OUTPUT_TAIL_CHARS = 1_000
+_OUTPUT_CLIP_MARKER = "\n[... output clipped ...]\n"
 
 
 class MissionLedgerError(Exception):
@@ -151,6 +173,27 @@ def _utc_now_iso() -> str:
 
 def _clip(text: str, limit: int = MAX_LEDGER_TEXT_CHARS) -> str:
     return text if len(text) <= limit else text[:limit]
+
+
+def _clip_ends(
+    text: str,
+    limit: int = MAX_LEDGER_OUTPUT_CHARS,
+    tail: int = MAX_LEDGER_OUTPUT_TAIL_CHARS,
+) -> str:
+    """Bound text to ``limit`` while preserving its final ``tail`` characters.
+
+    Redaction must already have happened: this only ever drops characters
+    from the middle of its input, so it can neither reassemble a clipped
+    secret nor surface one the redactor removed.
+    """
+    if len(text) <= limit:
+        return text
+    head = limit - tail - len(_OUTPUT_CLIP_MARKER)
+    if head <= 0:
+        # A caller-supplied bound too small for both ends: keep the end,
+        # where the error lives, and stay within the limit.
+        return text[-limit:]
+    return text[:head] + _OUTPUT_CLIP_MARKER + text[-tail:]
 
 
 def _redact_text(text: str, secret_values: tuple[str, ...]) -> str:
@@ -371,6 +414,10 @@ class MissionRecord:
     final_frontier_sha: str = ""
     final_validation_sha: str = ""
     max_attempts_per_task: int = 0
+    # Pinned at creation: how many dedicated quality-remediation attempts a
+    # task may add beyond the base budget (0 or 1). Records written before
+    # this policy existed deserialize as 0 and never gain the reserve.
+    quality_reserve_per_task: int = 0
     # Which transport executed this mission's attempts. Recorded so a later
     # resume cannot quietly run the rest of the work somewhere else.
     task_transport: str = ""
@@ -418,6 +465,7 @@ class MissionRecord:
             "final_frontier_sha": self.final_frontier_sha,
             "final_validation_sha": self.final_validation_sha,
             "max_attempts_per_task": self.max_attempts_per_task,
+            "quality_reserve_per_task": self.quality_reserve_per_task,
             "task_transport": self.task_transport,
             "tasks": [task.to_dict() for task in self.tasks],
             "routing": [dict(item) for item in self.routing],
@@ -452,6 +500,11 @@ class MissionRecord:
             max_attempts_per_task=(
                 int(data.get("max_attempts_per_task") or DEFAULT_MAX_ATTEMPTS_PER_TASK)
             ),
+            # Deliberately NOT the creation default: the reserve is policy
+            # pinned at creation, and a record from before the policy existed
+            # was created under "no reserve". Upgrading the software must
+            # never hand an old blocked mission a new attempt.
+            quality_reserve_per_task=int(data.get("quality_reserve_per_task") or 0),
             task_transport=str(data.get("task_transport", "")),
             tasks=tuple(MissionTaskRecord.from_dict(t) for t in data.get("tasks", ())),
             routing=tuple(dict(item) for item in data.get("routing", ())),
@@ -475,8 +528,12 @@ def _bounded_validation(
     bounded: list[dict[str, Any]] = []
     for result in results:
         evidence = result.as_evidence_dict()
-        evidence["stdout"] = safe(str(evidence.get("stdout", "")), MAX_LEDGER_OUTPUT_CHARS)
-        evidence["stderr"] = safe(str(evidence.get("stderr", "")), MAX_LEDGER_OUTPUT_CHARS)
+        # Head AND tail: the terminal error line a remediation needs is at
+        # the END of pytest output, and a head-only clip - or any tail taken
+        # from one later - deletes it. `safe` redacts the WHOLE text before
+        # _clip_ends drops the middle, so a clipped secret cannot survive.
+        evidence["stdout"] = _clip_ends(safe(str(evidence.get("stdout", "")), _NO_CLIP))
+        evidence["stderr"] = _clip_ends(safe(str(evidence.get("stderr", "")), _NO_CLIP))
         bounded.append(evidence)
     return tuple(bounded)
 
@@ -552,6 +609,7 @@ class MissionStore:
         plan_mission_id: str,
         objective_id: str,
         max_attempts_per_task: int = DEFAULT_MAX_ATTEMPTS_PER_TASK,
+        quality_reserve_per_task: int = DEFAULT_QUALITY_RESERVE_PER_TASK,
         task_transport: str = "",
     ) -> MissionRecord:
         """Create a brand-new mission record; never overwrites an existing one."""
@@ -559,6 +617,12 @@ class MissionStore:
             raise MissionLedgerError(f"mission {mission_id} already exists")
         if max_attempts_per_task < 1:
             raise MissionLedgerError("a mission needs at least one attempt per task")
+        if (
+            not isinstance(quality_reserve_per_task, int)
+            or isinstance(quality_reserve_per_task, bool)
+            or quality_reserve_per_task not in (0, 1)
+        ):
+            raise MissionLedgerError("quality_reserve_per_task must be 0 or 1")
         now = _utc_now_iso()
         return self._write(
             MissionRecord(
@@ -571,6 +635,7 @@ class MissionStore:
                 updated_at=now,
                 status=MISSION_RUNNING,
                 max_attempts_per_task=max_attempts_per_task,
+                quality_reserve_per_task=quality_reserve_per_task,
                 task_transport=task_transport,
             )
         )
@@ -666,9 +731,11 @@ class MissionStore:
             raise MissionLedgerError(f"task {task_id} already has an attempt in flight")
         if task.state not in (TASK_PENDING,) + RECOVERABLE_STATES:
             raise MissionLedgerError(f"task {task_id} is {task.state}; it cannot be attempted")
-        if len(task.attempts) >= record.max_attempts_per_task:
+        if len(task.attempts) >= record.max_attempts_per_task and not (
+            quality_reserve_available(record, task_id)
+        ):
             raise MissionLedgerError(
-                f"task {task_id} has used all {record.max_attempts_per_task} attempts"
+                f"task {task_id} has used all {len(task.attempts)} attempts"
             )
         if baseline_sha != record.frontier_sha:
             raise MissionLedgerError(
@@ -1089,6 +1156,50 @@ def approve_mission(
 def attempts_remaining(record: MissionRecord, task_id: str) -> int:
     """Attempts still available to a task, derived purely from durable history."""
     return max(0, record.max_attempts_per_task - len(record.task(task_id).attempts))
+
+
+# Canonical terminal states that carry QA/Reviewer feedback. Only these ever
+# qualify for the quality reserve: validation, execution, provider, transport
+# and interrupted failures never do.
+_QUALITY_BLOCKED_STATES = (STATUS_QA_BLOCKED, STATUS_REVIEWER_BLOCKED)
+
+
+def quality_reserve_available(record: MissionRecord, task_id: str) -> bool:
+    """Whether the one-shot quality-remediation attempt is open for a task.
+
+    Deterministic over pinned policy plus immutable attempt history, so a
+    restart can neither replenish nor forget it:
+
+    - the mission must have the reserve pinned at creation (legacy records
+      deserialize as 0 and never gain it);
+    - the base budget must be exactly consumed (once the extra attempt is
+      recorded the count exceeds the base and the reserve is spent, whatever
+      that attempt's outcome);
+    - the FIRST QA- or Reviewer-blocked attempt in history must be the final
+      ordinary attempt. A first quality blocker on any earlier attempt
+      already had ordinary remediation slots after it, so a later block
+      earns nothing - the invariant is that the first quality feedback gets
+      at least one subsequent attempt, not that every block adds one.
+    """
+    if record.quality_reserve_per_task < 1:
+        return False
+    task = record.task(task_id)
+    if len(task.attempts) != record.max_attempts_per_task:
+        return False
+    def carries_feedback(a: MissionAttemptRecord) -> bool:
+        # The reserve exists to make feedback actionable, so the qualifying
+        # attempt must actually carry its verdict. A blocked STATUS with no
+        # recorded verdict has nothing to remediate and earns nothing.
+        if a.status == STATUS_QA_BLOCKED:
+            return a.qa is not None
+        if a.status == STATUS_REVIEWER_BLOCKED:
+            return a.reviewer is not None
+        return False
+
+    first_quality = next((a for a in task.attempts if carries_feedback(a)), None)
+    if first_quality is None:
+        return False
+    return first_quality.attempt == record.max_attempts_per_task
 
 
 def rebuild_task_contracts(record: MissionRecord) -> tuple[TaskContract, ...]:
