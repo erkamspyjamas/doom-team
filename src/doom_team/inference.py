@@ -8,6 +8,7 @@ into a small taxonomy, and never persists private reasoning contents.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -23,6 +24,39 @@ TIMEOUT = "timeout"
 OVERLOAD = "overload"
 REJECTION = "rejection"
 MALFORMED = "malformed"
+
+# Canonical request profile for the NVIDIA V4 Pro primary route. Attached only
+# when the configured provider is NVIDIA - these are top-level OpenAI-compatible
+# body fields, and reasoning_effort=max is the NVIDIA NIM reasoning switch.
+NVIDIA_REQUEST_PROFILE: dict[str, Any] = {
+    "reasoning_effort": "max",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "max_tokens": 16384,
+    "seed": 42,
+    "stream": False,
+}
+
+# Provider-availability statuses that make a primary-route failure eligible for
+# the single fallback route. 429/503 and network errors already normalize to
+# OVERLOAD and timeouts to TIMEOUT; these are the remaining transient HTTP
+# statuses that normalize to REJECTION.
+_FALLBACK_ELIGIBLE_STATUSES = frozenset({408, 500, 502, 504})
+
+
+def fallback_eligible(failure: InferenceFailure) -> bool:
+    """Whether a normalized primary failure may use the fallback route.
+
+    Availability only: timeouts, overload/rate-limit/network failures, and
+    transient 5xx/408. A 400/401/403/404/422 is a configuration or request
+    error the operator must SEE - masking a broken primary credential or model
+    name behind a working fallback would hide exactly the misconfiguration
+    this policy needs surfaced. A successful HTTP response never falls back,
+    however unwelcome its content.
+    """
+    if failure.kind in (TIMEOUT, OVERLOAD):
+        return True
+    return failure.kind == REJECTION and failure.status in _FALLBACK_ELIGIBLE_STATUSES
 
 
 @dataclass(frozen=True)
@@ -85,6 +119,7 @@ class OpenAICompatibleInferenceClient:
         timeout: float = 60.0,
         routing: ProviderRouting | None = None,
         provider_field: str = "provider",
+        extra_body: dict[str, Any] | None = None,
         urlopen: Callable[..., Any] | None = None,
         event_sink: EventSink | None = None,
         producer_run: str = "",
@@ -94,6 +129,12 @@ class OpenAICompatibleInferenceClient:
         self._model = model
         self._timeout = timeout
         self._routing = routing
+        # Additional top-level request-body fields for THIS route only (e.g.
+        # the NVIDIA reasoning/sampling profile). Never model or messages.
+        self._extra_body = {
+            k: v for k, v in dict(extra_body or {}).items()
+            if k not in ("model", "messages")
+        }
         self._provider_field = provider_field
         self._urlopen = urlopen if urlopen is not None else urllib.request.urlopen
         self._event_sink = event_sink
@@ -116,11 +157,18 @@ class OpenAICompatibleInferenceClient:
     def complete(self, messages: list[dict[str, str]]) -> InferenceResponse:
         """Send a chat completion request and return a normalized response."""
         payload: dict[str, Any] = {"model": self._model, "messages": messages}
+        payload.update(self._extra_body)
         if self._routing is not None:
             payload[self._provider_field] = self._routing.to_payload()
 
         body = json.dumps(payload).encode("utf-8")
-        url = f"{self._base_url}/v1/chat/completions"
+        # Vendors document their base URL inconsistently: OpenRouter as
+        # https://openrouter.ai/api, NVIDIA as https://integrate.api.nvidia.com/v1.
+        # Accept both spellings and never construct a doubled /v1/v1 path.
+        if self._base_url.endswith("/v1"):
+            url = f"{self._base_url}/chat/completions"
+        else:
+            url = f"{self._base_url}/v1/chat/completions"
         req = urllib.request.Request(
             url,
             data=body,
@@ -153,6 +201,22 @@ class OpenAICompatibleInferenceClient:
             self._record_error(TIMEOUT, "request timed out")
             raise InferenceError(
                 InferenceFailure(TIMEOUT, "request timed out")
+            ) from exc
+        except UnicodeDecodeError as exc:
+            self._record_error(MALFORMED, "response was not valid UTF-8")
+            raise InferenceError(
+                InferenceFailure(MALFORMED, "response was not valid UTF-8")
+            ) from exc
+        except (http.client.HTTPException, OSError) as exc:
+            # A connection that dies AFTER connect - reset or truncated while
+            # the (non-streamed) body is delivered - is the same availability
+            # failure as one refused at connect time. urllib only wraps
+            # request-phase errors in URLError; getresponse()/read() failures
+            # arrive raw and must not escape the taxonomy, or the fallback
+            # route is silently forfeited exactly when it is needed.
+            self._record_error(OVERLOAD, f"connection failed mid-response: {exc!r}")
+            raise InferenceError(
+                InferenceFailure(OVERLOAD, f"connection failed mid-response: {exc!r}")
             ) from exc
 
         try:
@@ -226,12 +290,116 @@ class OpenAICompatibleInferenceClient:
         return urlparse(self._base_url).netloc
 
 
+def _clip_detail(text: str, limit: int = 300) -> str:
+    return text if len(text) <= limit else text[:limit]
+
+
+class RoutedInferenceClient:
+    """One primary route plus at most ONE fallback route per logical call.
+
+    The bound is structural: a call invokes the primary client exactly once
+    and, only for an availability-eligible failure, the fallback client
+    exactly once. There is no loop, no third route, and no route back into
+    the primary. Configuration and semantic failures raise unchanged, so a
+    broken primary credential or model name stays visible.
+    """
+
+    def __init__(
+        self,
+        primary: OpenAICompatibleInferenceClient,
+        fallback: OpenAICompatibleInferenceClient,
+        *,
+        primary_label: str,
+        fallback_label: str,
+        event_sink: EventSink | None = None,
+        producer_run: str = "",
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._primary_label = primary_label
+        self._fallback_label = fallback_label
+        self._event_sink = event_sink
+        self._producer_run = producer_run
+
+    def complete(self, messages: list[dict[str, str]]) -> InferenceResponse:
+        try:
+            return self._primary.complete(messages)
+        except InferenceError as primary_error:
+            if not fallback_eligible(primary_error.failure):
+                raise
+            if self._event_sink is not None:
+                try:
+                    self._event_sink.record(
+                        Event(
+                            kind="PROVIDER_FALLBACK",
+                            details={
+                                "from_route": self._primary_label,
+                                "to_route": self._fallback_label,
+                                "reason_kind": primary_error.failure.kind,
+                                "reason_status": primary_error.failure.status,
+                            },
+                            producer_role="inference",
+                            producer_run=self._producer_run,
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - observability never eats the route
+                    # A full disk must not convert a recoverable provider
+                    # outage into a dead logical call between the two routes.
+                    pass
+            try:
+                return self._fallback.complete(messages)
+            except InferenceError as fallback_error:
+                raise InferenceError(
+                    InferenceFailure(
+                        kind=fallback_error.failure.kind,
+                        detail=(
+                            f"primary route {self._primary_label} unavailable "
+                            f"({primary_error.failure.kind}"
+                            + (
+                                f" HTTP {primary_error.failure.status}"
+                                if primary_error.failure.status is not None
+                                else ""
+                            )
+                            + f": {_clip_detail(primary_error.failure.detail)}); "
+                            f"fallback route {self._fallback_label} failed "
+                            f"({fallback_error.failure.kind}: "
+                            f"{_clip_detail(fallback_error.failure.detail)})"
+                        ),
+                        status=fallback_error.failure.status,
+                    )
+                ) from fallback_error
+
+
+def _route_extras(provider: str, settings: Settings) -> tuple[
+    ProviderRouting | None, dict[str, Any] | None
+]:
+    """Per-route request options: profiles belong to routes, never globally.
+
+    OpenRouter speaks the provider-preferences body fragment; the NVIDIA NIM
+    endpoint speaks the canonical reasoning/sampling profile. Sending either
+    vocabulary to the other endpoint would be rejected or silently misread.
+    """
+    name = provider.strip().lower()
+    if name == "openrouter":
+        return (
+            ProviderRouting(
+                order=settings.provider_order,
+                forbidden=settings.forbidden_providers,
+                allow_fallbacks=settings.allow_fallbacks,
+            ),
+            None,
+        )
+    if name == "nvidia":
+        return None, dict(NVIDIA_REQUEST_PROFILE)
+    return None, None
+
+
 def build_inference_client(
     settings: Settings,
     *,
     event_sink: EventSink | None = None,
     producer_run: str = "",
-) -> OpenAICompatibleInferenceClient:
+) -> OpenAICompatibleInferenceClient | RoutedInferenceClient:
     """Construct the canonical inference client from validated settings.
 
     This is the single construction seam future planner, specialist runner,
@@ -243,25 +411,39 @@ def build_inference_client(
         raise ConfigError(
             "provider_base_url must be configured to construct the inference client"
         )
-    # The provider-routing body fragment is OpenRouter request vocabulary;
-    # sending it to a plain OpenAI-compatible endpoint would be rejected or
-    # silently misread, so the seam stays vendor-neutral by attaching it only
-    # when the configured provider actually speaks it.
-    routing = (
-        ProviderRouting(
-            order=settings.provider_order,
-            forbidden=settings.forbidden_providers,
-            allow_fallbacks=settings.allow_fallbacks,
-        )
-        if settings.model_provider.strip().lower() == "openrouter"
-        else None
-    )
-    return OpenAICompatibleInferenceClient(
+    routing, extra_body = _route_extras(settings.model_provider, settings)
+    primary = OpenAICompatibleInferenceClient(
         settings.provider_base_url,
         settings._api_key,
         settings.model_name,
         timeout=settings.request_timeout,
         routing=routing,
+        extra_body=extra_body,
+        event_sink=event_sink,
+        producer_run=producer_run,
+    )
+    if not settings.fallback_model_name:
+        return primary
+    if not settings.fallback_base_url:
+        raise ConfigError(
+            "fallback_base_url must be configured to construct the fallback route"
+        )
+    fb_routing, fb_extra = _route_extras(settings.fallback_provider, settings)
+    fallback = OpenAICompatibleInferenceClient(
+        settings.fallback_base_url,
+        settings._fallback_api_key,
+        settings.fallback_model_name,
+        timeout=settings.request_timeout,
+        routing=fb_routing,
+        extra_body=fb_extra,
+        event_sink=event_sink,
+        producer_run=producer_run,
+    )
+    return RoutedInferenceClient(
+        primary,
+        fallback,
+        primary_label=f"{settings.model_provider}/{settings.model_name}",
+        fallback_label=f"{settings.fallback_provider}/{settings.fallback_model_name}",
         event_sink=event_sink,
         producer_run=producer_run,
     )

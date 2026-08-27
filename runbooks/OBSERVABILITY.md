@@ -37,6 +37,7 @@ Each line is a single JSON object with the following shape:
 | `MISSION_STARTED` / `MISSION_COMPLETED` | `dev` | Mission lifecycle boundaries |
 | `TASK_STARTED` / `TASK_COMPLETED` / `TASK_FAILED` | `dev` | Per-task lifecycle events |
 | `PROVIDER_ROUTE` | `inference` | Actual provider/model/runtime used |
+| `PROVIDER_FALLBACK` | `inference` | Primary inference route unavailable; the single fallback route was used |
 | `PROVIDER_ERROR` | `inference` | Inference timeout/overload/rejection/malformed |
 | `APPROVAL_RECORDED` / `APPROVAL_DENIED` / `APPROVAL_ERROR` | `approval` | Human approval decisions and failures |
 | `SERVICE_STARTED` / `SERVICE_STOPPED` | `system` | Process lifecycle |

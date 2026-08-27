@@ -244,12 +244,13 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
         )
         return EXIT_RUN_ERROR
     try:
-        client = build_inference_client(settings)
+        sink = _make_event_sink(settings)
+        client = build_inference_client(settings, event_sink=sink)
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     try:
-        runner = _build_mission_runner(settings, client)
+        runner = _build_mission_runner(settings, client, sink=sink)
     except (RuntimeError_, ConfigError) as exc:
         print(f"run: task transport unavailable: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
@@ -269,15 +270,20 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
     return EXIT_SUCCESS
 
 
-def _build_mission_runner(settings: Settings, client: Any) -> MissionRunner:
+def _build_mission_runner(
+    settings: Settings, client: Any, sink: DurableEventSink | None = None
+) -> MissionRunner:
     """The one mission runtime, shared by `run` and `resume`.
 
     The recovery budget is the operator's configured semantic retry policy and
     the execution transport is the operator's configured choice, so both entry
-    points bound attempts and run work identically.
+    points bound attempts and run work identically. The caller may hand in the
+    durable event sink it already wired into the inference client, so provider
+    fallback events land in the same mission event log.
     """
     store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
-    sink = _make_event_sink(settings)
+    if sink is None:
+        sink = _make_event_sink(settings)
     transport = build_task_execution_transport(settings, client, event_sink=sink)
     return MissionRunner(
         client,
@@ -297,12 +303,13 @@ def _cmd_resume(settings: Settings, mission_id: str) -> int:
     that already finished with this layer is reported rather than re-run.
     """
     try:
-        client = build_inference_client(settings)
+        sink = _make_event_sink(settings)
+        client = build_inference_client(settings, event_sink=sink)
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     try:
-        runner = _build_mission_runner(settings, client)
+        runner = _build_mission_runner(settings, client, sink=sink)
     except (RuntimeError_, ConfigError) as exc:
         print(f"resume: task transport unavailable: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR

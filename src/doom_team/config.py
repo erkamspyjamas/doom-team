@@ -76,22 +76,42 @@ class Settings:
     provider_base_url: str | None = None
     # Where task attempts execute. Trusted operator configuration: a task
     # attempt can name WHICH policy applies, never where or what runs.
+    # Optional single fallback inference route (provider availability only).
+    # Configured as a unit: naming any fallback field requires all of them,
+    # with its own independent credential. Empty means no Doom Team fallback.
+    fallback_provider: str = ""
+    fallback_model_name: str = ""
+    fallback_base_url: str | None = None
+    fallback_api_key_env: str = ""
     task_transport: str = TRANSPORT_IN_PROCESS
     gas_city_binary: str | None = None
     gas_city_city: str | None = None
     gas_city_agent: str = "mayor"
     gas_city_attempt_timeout: float = 900.0
     _api_key: str = field(repr=False, default="")
+    _fallback_api_key: str = field(repr=False, default="")
 
     def redact(self, value: str) -> str:
-        """Replace the configured secret value with a redaction marker."""
-        if self._api_key and self._api_key in value:
-            return value.replace(self._api_key, "[REDACTED]")
+        """Replace the configured secret values with a redaction marker.
+
+        Longest first: replacing a shorter secret that is a substring of a
+        longer one would split the longer secret around the marker and leave
+        recognizable cleartext residue.
+        """
+        for secret in self.redaction_secrets():
+            if secret in value:
+                value = value.replace(secret, "[REDACTED]")
         return value
 
     def redaction_secrets(self) -> tuple[str, ...]:
-        """Return secret values used for redaction at the observability sink."""
-        return (self._api_key,) if self._api_key else ()
+        """Secret values for redaction sinks, longest first (see redact)."""
+        return tuple(
+            sorted(
+                (s for s in (self._api_key, self._fallback_api_key) if s),
+                key=len,
+                reverse=True,
+            )
+        )
 
     def log_line(self) -> str:
         """Return a single operator-readable, secret-safe settings line."""
@@ -105,6 +125,10 @@ class Settings:
             f"allow_fallbacks={self.allow_fallbacks} "
             f"request_timeout={self.request_timeout} "
             f"provider_base_url={self.provider_base_url} "
+            f"fallback_provider={self.fallback_provider} "
+            f"fallback_model_name={self.fallback_model_name} "
+            f"fallback_base_url={self.fallback_base_url} "
+            f"fallback_api_key_env={self.fallback_api_key_env} "
             f"task_transport={self.task_transport} "
             f"gas_city_city={self.gas_city_city} credential=[REDACTED]"
         )
@@ -126,6 +150,10 @@ class Settings:
             "gas_city_city": self.gas_city_city,
             "gas_city_agent": self.gas_city_agent,
             "provider_base_url": self.provider_base_url,
+            "fallback_provider": self.fallback_provider,
+            "fallback_model_name": self.fallback_model_name,
+            "fallback_base_url": self.fallback_base_url,
+            "fallback_api_key_env": self.fallback_api_key_env,
             "credential": "[REDACTED]",
         }
 
@@ -160,6 +188,10 @@ class ConfigLoader:
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
         provider_base_url: str | None = None,
+        fallback_provider: str | None = None,
+        fallback_model_name: str | None = None,
+        fallback_base_url: str | None = None,
+        fallback_api_key_env: str | None = None,
         task_transport: str | None = None,
         gas_city_binary: str | None = None,
         gas_city_city: str | None = None,
@@ -260,33 +292,39 @@ class ConfigLoader:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
             raise ConfigError(f"request_timeout must be a number: {timeout!r}")
 
-        base_url_raw = (
-            provider_base_url
-            or env_value("provider_base_url")
-            or file_values.get("provider_base_url")
-        )
-        base_url_value: str | None
-        if base_url_raw is None:
-            base_url_value = None
-        else:
-            base_url_value = str(base_url_raw).strip()
-            parsed = urlparse(base_url_value)
+        def validated_base_url(raw: Any, label: str) -> str | None:
+            if raw is None:
+                return None
+            value = str(raw).strip()
+            parsed = urlparse(value)
             if parsed.username is not None or parsed.password is not None:
                 # Never echo the value: userinfo would be a credential, and
                 # secrets must stay in the environment, not in URLs, logs,
                 # or evidence.
                 raise ConfigError(
-                    "provider_base_url must not embed credentials; "
+                    f"{label} must not embed credentials; "
                     "keep secrets in the environment"
                 )
             if (
                 parsed.scheme not in ("http", "https")
                 or not parsed.netloc
-                or any(ch.isspace() for ch in base_url_value)
+                or any(ch.isspace() for ch in value)
             ):
+                raise ConfigError(f"{label} must be an http(s) URL: {value!r}")
+            if parsed.query or parsed.fragment:
+                # A query string is where a credential would hide, and base
+                # URLs are recorded in logs and evidence by design.
                 raise ConfigError(
-                    f"provider_base_url must be an http(s) URL: {base_url_value!r}"
+                    f"{label} must not carry a query string or fragment"
                 )
+            return value
+
+        base_url_value = validated_base_url(
+            provider_base_url
+            or env_value("provider_base_url")
+            or file_values.get("provider_base_url"),
+            "provider_base_url",
+        )
 
         transport = str(
             task_transport
@@ -342,6 +380,54 @@ class ConfigLoader:
             if not _SAFE_AGENT.fullmatch(gc_agent):
                 raise ConfigError(f"gas_city_agent must be a simple name: {gc_agent!r}")
 
+        fb_provider = str(
+            fallback_provider
+            or env_value("fallback_provider")
+            or file_values.get("fallback_provider")
+            or ""
+        ).strip()
+        fb_model = str(
+            fallback_model_name
+            or env_value("fallback_model_name")
+            or file_values.get("fallback_model_name")
+            or ""
+        ).strip()
+        fb_base_url = validated_base_url(
+            fallback_base_url
+            or env_value("fallback_base_url")
+            or file_values.get("fallback_base_url"),
+            "fallback_base_url",
+        )
+        fb_key_env = str(
+            fallback_api_key_env
+            or env_value("fallback_api_key_env")
+            or file_values.get("fallback_api_key_env")
+            or ""
+        ).strip()
+        fb_api_key = ""
+        fallback_fields = (fb_provider, fb_model, fb_base_url, fb_key_env)
+        if any(fallback_fields):
+            # The fallback route is configured as a unit and fails closed: a
+            # half-configured fallback discovered mid-mission would either
+            # crash the call or silently leave the product single-route.
+            if not all(fallback_fields):
+                raise ConfigError(
+                    "fallback route requires fallback_provider, "
+                    "fallback_model_name, fallback_base_url and "
+                    "fallback_api_key_env together"
+                )
+            if not is_sensitive_env_key(fb_key_env):
+                raise ConfigError(
+                    f"fallback_api_key_env {fb_key_env!r} would not be "
+                    "stripped from child processes; use a name containing "
+                    f"one of {', '.join(sorted(SENSITIVE_SUBSTRINGS))}"
+                )
+            fb_api_key = os.environ.get(fb_key_env, "")
+            if not fb_api_key:
+                raise ConfigError(
+                    f"credential environment variable {fb_key_env} must be set"
+                )
+
         api_key_env = (
             provider_api_key_env
             or env_value("provider_api_key_env")
@@ -374,12 +460,17 @@ class ConfigLoader:
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
             provider_base_url=base_url_value,
+            fallback_provider=fb_provider,
+            fallback_model_name=fb_model,
+            fallback_base_url=fb_base_url,
+            fallback_api_key_env=fb_key_env,
             task_transport=transport,
             gas_city_binary=str(gc_binary) if gc_binary else None,
             gas_city_city=str(gc_city) if gc_city else None,
             gas_city_agent=gc_agent,
             gas_city_attempt_timeout=gc_timeout,
             _api_key=api_key,
+            _fallback_api_key=fb_api_key,
         )
 
     @staticmethod

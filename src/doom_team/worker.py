@@ -27,6 +27,7 @@ from typing import Any
 
 from doom_team.config import ConfigError, ConfigLoader
 from doom_team.inference import build_inference_client
+from doom_team.observability import DurableEventSink
 from doom_team.subprocess_guard import run_guarded
 from doom_team.task_runner import ProductionTaskRunner
 from doom_team.transport import (
@@ -90,7 +91,14 @@ def _secret_values() -> tuple[str, ...]:
 def run_attempt(request: TaskAttemptRequest) -> dict[str, Any]:
     """Execute one attempt through the established production lifecycle."""
     settings = ConfigLoader().load()
-    client = build_inference_client(settings)
+    sink = DurableEventSink(
+        settings.state_dir, secret_values=settings.redaction_secrets()
+    )
+    client = build_inference_client(
+        settings,
+        event_sink=sink,
+        producer_run=f"{request.mission_id}/{request.task_id}",
+    )
     runner = ProductionTaskRunner(
         client, validation_commands=resolve_validation_policy(request.validation_policy)
     )

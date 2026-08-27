@@ -38,6 +38,10 @@ credential is missing. There are no defaults for required values.
 | `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 | `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
+| `fallback_provider` | with fallback | `DOOM_FALLBACK_PROVIDER` | Provider name of the single fallback inference route (e.g. `openrouter`) |
+| `fallback_model_name` | with fallback | `DOOM_FALLBACK_MODEL_NAME` | Model served by the fallback route |
+| `fallback_base_url` | with fallback | `DOOM_FALLBACK_BASE_URL` | Fallback route base URL, same rules as `provider_base_url` |
+| `fallback_api_key_env` | with fallback | `DOOM_FALLBACK_API_KEY_ENV` | Env var name holding the fallback route's own credential |
 | `task_transport` | no | `DOOM_TASK_TRANSPORT` | Where task attempts execute: `in_process` (default) or `gas_city` |
 | `gas_city_binary` | when `gas_city` | `DOOM_GAS_CITY_BINARY` | Absolute path to the `gc` executable |
 | `gas_city_city` | when `gas_city` | `DOOM_GAS_CITY_CITY` | Absolute path to the Doom Team-owned city (created on first use) |
@@ -78,15 +82,37 @@ see [Install](../runbooks/INSTALL.md).
 
 ## Provider routing
 
-`provider_order`, `forbidden_providers`, and `allow_fallbacks` are sent to
-OpenRouter as request-body routing preferences, and only when `model_provider`
-is `openrouter`; for any other provider they are omitted so a plain
-OpenAI-compatible endpoint is not sent vocabulary it cannot read.
+Request options are route-specific. `provider_order`, `forbidden_providers`,
+and `allow_fallbacks` are sent as request-body routing preferences only to an
+`openrouter` route; an `nvidia` route instead carries the canonical NVIDIA
+request profile (`reasoning_effort=max`, `temperature=1.0`, `top_p=0.95`,
+`max_tokens=16384`, `seed=42`, `stream=false`). No route is ever sent another
+route's vocabulary. Requests go to `<base_url>/v1/chat/completions`; a base
+URL already ending in `/v1` is used as-is, never doubled.
 
-Doom Team performs no client-side provider failover of its own. Each inference
-is a single request to `<provider_base_url>/v1/chat/completions`; a failure is
-normalized (`timeout`, `overload`, `rejection`, `malformed`) and raised. Any
-fallback between providers is performed by OpenRouter, not by Doom Team.
+### Provider failover
+
+The canonical production policy is a two-route failover:
+
+- **Primary**: `nvidia` / `deepseek-ai/deepseek-v4-pro-0813` at
+  `https://integrate.api.nvidia.com`, maximum reasoning.
+- **Fallback**: `openrouter` / `deepseek/deepseek-v4-flash-0731` at
+  `https://openrouter.ai/api`, with the OpenRouter preferences above.
+
+When the four `fallback_*` settings are configured (they are required as a
+unit, with an independent credential), one logical inference call tries the
+primary once and, only for a provider-availability failure — a timeout, a
+connection failure, HTTP 408/429/500/502/503/504 — the fallback exactly once.
+Never more than two route calls, and never back to the primary. A 400, 401,
+403, 404 or 422 from the primary raises unchanged so a misconfigured
+credential or model name stays visible, and a successful response never falls
+back however its content fares in later validation, QA, or review — fallback
+is about reachability, not model quality. A fallback that is used records a
+`PROVIDER_FALLBACK` event, and the response's recorded provider/model always
+name the route that actually answered. OpenRouter may still select among its
+own upstream hosts; that is internal to OpenRouter and separate from this
+two-route policy. Without the `fallback_*` settings there is a single route
+and failures raise directly.
 
 ## Credentials and secrets
 
