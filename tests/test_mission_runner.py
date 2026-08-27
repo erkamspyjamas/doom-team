@@ -171,7 +171,9 @@ def _runner(
     inference: MissionInference,
     *,
     final: tuple[ValidationCommand, ...] | None = None,
+    semantic_retries: int = 1,
 ) -> tuple[MissionRunner, MissionStore]:
+    """A runner with a tight, explicit recovery budget (2 attempts by default)."""
     store = MissionStore(tmp_path / "state")
     runner = MissionRunner(
         inference,
@@ -179,6 +181,7 @@ def _runner(
         workspaces_root=tmp_path / "work",
         validation_commands=VALIDATION,
         final_validation_commands=final,
+        semantic_retries=semantic_retries,
     )
     return runner, store
 
@@ -188,9 +191,12 @@ def _run(
     inference: MissionInference | None = None,
     *,
     final: tuple[ValidationCommand, ...] | None = None,
+    semantic_retries: int = 1,
 ) -> tuple[Any, MissionStore, MissionInference]:
     inference = inference or MissionInference()
-    runner, store = _runner(tmp_path, inference, final=final)
+    runner, store = _runner(
+        tmp_path, inference, final=final, semantic_retries=semantic_retries
+    )
     result = runner.run("Create a tiny Python arithmetic package", tmp_path / "project")
     return result, store, inference
 
@@ -268,9 +274,16 @@ def test_routed_specialist_reaches_the_real_task_runner(tmp_path: Path) -> None:
 
 
 def _assert_stopped_after_first_task(record: Any, expected_state: str) -> None:
+    """The first task never got past its bounded attempts, and nothing landed."""
     assert record.status == MISSION_BLOCKED
-    assert record.task("arith-code").state == expected_state
-    assert record.task("arith-code").integrated_sha == ""
+    task = record.task("arith-code")
+    assert task.state == expected_state
+    assert task.integrated_sha == ""
+    # Every attempt the budget allowed was used, and each one failed the same way.
+    assert len(task.attempts) == record.max_attempts_per_task
+    assert [a.status for a in task.attempts] == [expected_state] * len(task.attempts)
+    assert record.blocker is not None
+    assert record.blocker["reason"] == "recovery_exhausted"
     # Dependent tasks never started.
     assert record.task("arith-tests").state == "pending"
     assert record.task("arith-docs").state == "pending"
@@ -288,13 +301,13 @@ def test_task_validation_failure_blocks_the_mission(tmp_path: Path) -> None:
     result, store, inference = _run(tmp_path, MissionInference(work=broken))
     _assert_stopped_after_first_task(result.record, "validation_failed")
     assert result.record.blocker is not None
-    assert result.record.blocker["reason"] == "validation_failed"
     assert result.record.blocker["task_id"] == "arith-code"
     # Real validation evidence is preserved for the operator.
     validation = result.record.task("arith-code").validation
     assert any(item["passed"] is False for item in validation)
-    # Only one task was ever implemented: no retry, no dependent work.
-    assert inference.implemented == ["Implement the arithmetic module"]
+    # Only the failing task was ever implemented - bounded retries of it, and
+    # no dependent work at all.
+    assert inference.implemented == ["Implement the arithmetic module"] * 2
     assert DeliverableRepo.open(tmp_path / "project").head() == result.record.baseline_sha
 
 
@@ -304,7 +317,7 @@ def test_qa_block_blocks_the_mission(tmp_path: Path) -> None:
     qa = result.record.task("arith-code").qa
     assert qa is not None and qa["verdict"] == "block"
     assert result.record.task("arith-code").reviewer is None
-    assert inference.implemented == ["Implement the arithmetic module"]
+    assert inference.implemented == ["Implement the arithmetic module"] * 2
 
 
 def test_reviewer_block_blocks_the_mission(tmp_path: Path) -> None:
@@ -313,7 +326,7 @@ def test_reviewer_block_blocks_the_mission(tmp_path: Path) -> None:
     task = result.record.task("arith-code")
     assert task.qa is not None and task.qa["verdict"] == "pass"
     assert task.reviewer is not None and task.reviewer["verdict"] == "block"
-    assert inference.implemented == ["Implement the arithmetic module"]
+    assert inference.implemented == ["Implement the arithmetic module"] * 2
 
 
 def test_execution_failure_stops_the_mission_cleanly(tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from doom_team.domain import Mission
+from doom_team.domain import Mission, TaskContract
 from doom_team.durable import atomic_write_json, read_json_checked
 from doom_team.routing import RoutingDecision
 from doom_team.task_runner import (
@@ -83,16 +83,46 @@ TASK_FAILURE_STATES = (
     STATUS_EXECUTION_FAILED,
 )
 
+# An attempt whose process died before any trusted terminal result existed.
+# It is terminal for that attempt and it CONSUMES budget, so crashing is never
+# a way to buy extra tries.
+ATTEMPT_RUNNING = TASK_RUNNING
+ATTEMPT_INTERRUPTED = "interrupted"
+
+# Outcomes a fresh bounded attempt may follow. Every other terminal state -
+# a safety violation, ambiguous provenance, corrupt state - stays terminal.
+RECOVERABLE_STATES = TASK_FAILURE_STATES + (ATTEMPT_INTERRUPTED,)
+
 # Ledger evidence bounds: enough to understand what happened, never a second
 # copy of the repository. Diffs are referenced by SHA, never stored.
 MAX_LEDGER_OUTPUT_CHARS = 4_000
 MAX_LEDGER_TEXT_CHARS = 2_000
 MAX_LEDGER_BLOCKERS = 20
+MAX_REMEDIATION_CHARS = 2_000
 
 _MISSION_ID = re.compile(r"^mission-[0-9a-f]{6,32}-[0-9a-f]{8}$")
 
 # Reserved ApprovalPort action namespace for mission decisions.
 MISSION_ACTION_PREFIX = "mission:"
+
+# The size of the bound is the project's existing recovery policy: a task gets
+# one initial attempt plus `Settings.semantic_retries` remediations, and this
+# default mirrors the canonical Settings default. The metering is deliberately
+# STRICTER than doom_team.recovery's, which exempts runtime failures from the
+# semantic budget: here every terminal attempt occupies a slot, including a
+# provider failure or an interrupted one. A mission must not be able to retry
+# forever because the failures keep being classified as infrastructural.
+DEFAULT_SEMANTIC_RETRIES = 3
+
+
+def max_attempts_for(semantic_retries: int) -> int:
+    """One initial attempt plus the configured semantic remediation budget."""
+    if semantic_retries < 0:
+        raise MissionLedgerError("semantic retries cannot be negative")
+    return 1 + semantic_retries
+
+
+DEFAULT_MAX_ATTEMPTS_PER_TASK = 1 + DEFAULT_SEMANTIC_RETRIES
 
 
 class MissionLedgerError(Exception):
@@ -133,7 +163,7 @@ def _redact_text(text: str, secret_values: tuple[str, ...]) -> str:
 # Lookup keys are never rewritten: redacting an identifier would corrupt the
 # record's own addressing. Plans whose identifiers carry secret material are
 # refused outright in :meth:`MissionStore.record_plan` instead.
-_IDENTITY_KEYS = frozenset({"mission_id", "task_id"})
+_IDENTITY_KEYS = frozenset({"mission_id", "task_id", "workspace_dir", "branch"})
 
 
 def _redact(value: Any, secret_values: tuple[str, ...]) -> Any:
@@ -153,12 +183,96 @@ def _redact(value: Any, secret_values: tuple[str, ...]) -> Any:
 
 
 @dataclass(frozen=True)
+class MissionAttemptRecord:
+    """One immutable execution attempt at a task.
+
+    Attempts are append-only history. A later successful recovery is a NEW
+    attempt; it never rewrites the failed one, so "attempt 1 failed" stays
+    true forever.
+    """
+
+    attempt: int
+    baseline_sha: str
+    specialist_id: str
+    started_at: str
+    ended_at: str = ""
+    status: str = ATTEMPT_RUNNING
+    candidate_sha: str = ""
+    changed_files: tuple[str, ...] = ()
+    implementation_summary: str = ""
+    validation: tuple[dict[str, Any], ...] = ()
+    qa: dict[str, Any] | None = None
+    reviewer: dict[str, Any] | None = None
+    failure_detail: str = ""
+    remediation: str = ""
+    # Only the generated leaf directory name and branch, never an absolute
+    # path: enough for a resumed process to find the workspace under its own
+    # configured root, without persisting an operator path.
+    workspace_dir: str = ""
+    branch: str = ""
+
+    @property
+    def terminal(self) -> bool:
+        return self.status != ATTEMPT_RUNNING
+
+    @property
+    def accepted(self) -> bool:
+        return self.status == STATUS_ACCEPTED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "baseline_sha": self.baseline_sha,
+            "specialist_id": self.specialist_id,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "status": self.status,
+            "candidate_sha": self.candidate_sha,
+            "changed_files": list(self.changed_files),
+            "implementation_summary": self.implementation_summary,
+            "validation": [dict(i) for i in self.validation],
+            "qa": dict(self.qa) if self.qa is not None else None,
+            "reviewer": dict(self.reviewer) if self.reviewer is not None else None,
+            "failure_detail": self.failure_detail,
+            "remediation": self.remediation,
+            "workspace_dir": self.workspace_dir,
+            "branch": self.branch,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MissionAttemptRecord":
+        return cls(
+            attempt=int(data["attempt"]),
+            baseline_sha=str(data.get("baseline_sha", "")),
+            specialist_id=str(data.get("specialist_id", "")),
+            started_at=str(data.get("started_at", "")),
+            ended_at=str(data.get("ended_at", "")),
+            status=str(data.get("status", ATTEMPT_RUNNING)),
+            candidate_sha=str(data.get("candidate_sha", "")),
+            changed_files=tuple(str(f) for f in data.get("changed_files", ())),
+            implementation_summary=str(data.get("implementation_summary", "")),
+            validation=tuple(dict(i) for i in data.get("validation", ())),
+            qa=dict(data["qa"]) if data.get("qa") is not None else None,
+            reviewer=dict(data["reviewer"]) if data.get("reviewer") is not None else None,
+            failure_detail=str(data.get("failure_detail", "")),
+            remediation=str(data.get("remediation", "")),
+            workspace_dir=str(data.get("workspace_dir", "")),
+            branch=str(data.get("branch", "")),
+        )
+
+
+@dataclass(frozen=True)
 class MissionTaskRecord:
     """Durable record of one task inside a mission."""
 
     task_id: str
     dependencies: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
+    # The pinned contract, so a resumed mission rebuilds exactly the task that
+    # was planned instead of asking the planner again.
+    instruction: str = ""
+    acceptance_criteria: tuple[str, ...] = ()
+    attempts: tuple[MissionAttemptRecord, ...] = ()
     specialist_id: str = ""
     state: str = TASK_PENDING
     baseline_sha: str = ""
@@ -179,11 +293,29 @@ class MissionTaskRecord:
     def integrated(self) -> bool:
         return self.state == TASK_INTEGRATED
 
+    @property
+    def open_attempt(self) -> MissionAttemptRecord | None:
+        """The attempt still in flight, if any (at most one by construction)."""
+        for attempt in self.attempts:
+            if not attempt.terminal:
+                return attempt
+        return None
+
+    @property
+    def accepted_attempt(self) -> MissionAttemptRecord | None:
+        for attempt in self.attempts:
+            if attempt.accepted:
+                return attempt
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "dependencies": list(self.dependencies),
             "required_capabilities": list(self.required_capabilities),
+            "instruction": self.instruction,
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "attempts": [a.to_dict() for a in self.attempts],
             "specialist_id": self.specialist_id,
             "state": self.state,
             "baseline_sha": self.baseline_sha,
@@ -203,6 +335,11 @@ class MissionTaskRecord:
             task_id=str(data["task_id"]),
             dependencies=tuple(str(d) for d in data.get("dependencies", ())),
             required_capabilities=tuple(str(c) for c in data.get("required_capabilities", ())),
+            instruction=str(data.get("instruction", "")),
+            acceptance_criteria=tuple(str(c) for c in data.get("acceptance_criteria", ())),
+            attempts=tuple(
+                MissionAttemptRecord.from_dict(a) for a in data.get("attempts", ())
+            ),
             specialist_id=str(data.get("specialist_id", "")),
             state=str(data.get("state", TASK_PENDING)),
             baseline_sha=str(data.get("baseline_sha", "")),
@@ -233,6 +370,7 @@ class MissionRecord:
     frontier_sha: str = ""
     final_frontier_sha: str = ""
     final_validation_sha: str = ""
+    max_attempts_per_task: int = 0
     tasks: tuple[MissionTaskRecord, ...] = ()
     routing: tuple[dict[str, Any], ...] = ()
     final_validation: tuple[dict[str, Any], ...] | None = None
@@ -276,6 +414,7 @@ class MissionRecord:
             "frontier_sha": self.frontier_sha,
             "final_frontier_sha": self.final_frontier_sha,
             "final_validation_sha": self.final_validation_sha,
+            "max_attempts_per_task": self.max_attempts_per_task,
             "tasks": [task.to_dict() for task in self.tasks],
             "routing": [dict(item) for item in self.routing],
             "final_validation": (
@@ -304,6 +443,11 @@ class MissionRecord:
             frontier_sha=str(data.get("frontier_sha", "")),
             final_frontier_sha=str(data.get("final_frontier_sha", "")),
             final_validation_sha=str(data.get("final_validation_sha", "")),
+            # A record written before the bound existed has none; adopt the
+            # canonical default rather than reading it as "no attempts left".
+            max_attempts_per_task=(
+                int(data.get("max_attempts_per_task") or DEFAULT_MAX_ATTEMPTS_PER_TASK)
+            ),
             tasks=tuple(MissionTaskRecord.from_dict(t) for t in data.get("tasks", ())),
             routing=tuple(dict(item) for item in data.get("routing", ())),
             final_validation=(
@@ -387,14 +531,28 @@ class MissionStore:
         return MissionRecord.from_dict(read_json_checked(self._path(mission_id)))
 
     def list_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(path.stem for path in self.missions_dir.glob("mission-*.json")))
+        return tuple(
+            sorted(
+                path.stem
+                for path in self.missions_dir.glob("mission-*.json")
+                if not path.stem.endswith((".execution", ".decision"))
+            )
+        )
 
     def create(
-        self, *, mission_id: str, objective: str, plan_mission_id: str, objective_id: str
+        self,
+        *,
+        mission_id: str,
+        objective: str,
+        plan_mission_id: str,
+        objective_id: str,
+        max_attempts_per_task: int = DEFAULT_MAX_ATTEMPTS_PER_TASK,
     ) -> MissionRecord:
         """Create a brand-new mission record; never overwrites an existing one."""
         if self.exists(mission_id):
             raise MissionLedgerError(f"mission {mission_id} already exists")
+        if max_attempts_per_task < 1:
+            raise MissionLedgerError("a mission needs at least one attempt per task")
         now = _utc_now_iso()
         return self._write(
             MissionRecord(
@@ -406,6 +564,7 @@ class MissionStore:
                 created_at=now,
                 updated_at=now,
                 status=MISSION_RUNNING,
+                max_attempts_per_task=max_attempts_per_task,
             )
         )
 
@@ -435,6 +594,10 @@ class MissionStore:
                 task_id=task.id,
                 dependencies=task.dependencies,
                 required_capabilities=task.required_capabilities,
+                instruction=self._safe(task.instruction, MAX_LEDGER_OUTPUT_CHARS),
+                acceptance_criteria=tuple(
+                    self._safe(c) for c in task.acceptance_criteria
+                ),
             )
             for task in mission.tasks
         )
@@ -472,21 +635,90 @@ class MissionStore:
         return self._write(replace(record, tasks=tasks, routing=routing))
 
     def record_task_started(
-        self, mission_id: str, task_id: str, *, baseline_sha: str
+        self,
+        mission_id: str,
+        task_id: str,
+        *,
+        baseline_sha: str,
+        specialist_id: str = "",
+        remediation: str = "",
+        workspace_dir: str = "",
+        branch: str = "",
     ) -> MissionRecord:
-        """Mark a task in flight against the frontier it actually starts from."""
+        """Open a bounded attempt against the frontier it actually starts from.
+
+        The bound is enforced here, from durable history: a task may only open
+        as many attempts as the mission's ``max_attempts_per_task``. Because
+        the count comes from persisted attempts rather than a live counter,
+        restarting the process cannot buy extra tries.
+        """
         record = self.load(mission_id)
         self._require_running(record)
         task = record.task(task_id)
-        if task.state not in (TASK_PENDING,):
-            raise MissionLedgerError(f"task {task_id} is {task.state}, not pending")
+        if task.state == TASK_RUNNING or task.open_attempt is not None:
+            raise MissionLedgerError(f"task {task_id} already has an attempt in flight")
+        if task.state not in (TASK_PENDING,) + RECOVERABLE_STATES:
+            raise MissionLedgerError(f"task {task_id} is {task.state}; it cannot be attempted")
+        if len(task.attempts) >= record.max_attempts_per_task:
+            raise MissionLedgerError(
+                f"task {task_id} has used all {record.max_attempts_per_task} attempts"
+            )
         if baseline_sha != record.frontier_sha:
             raise MissionLedgerError(
                 f"task {task_id} would start from {baseline_sha}, "
                 f"not the current frontier {record.frontier_sha}"
             )
-        updated = replace(task, state=TASK_RUNNING, baseline_sha=baseline_sha)
+        attempt = MissionAttemptRecord(
+            attempt=len(task.attempts) + 1,
+            baseline_sha=baseline_sha,
+            specialist_id=specialist_id or task.specialist_id,
+            started_at=_utc_now_iso(),
+            remediation=self._safe(remediation, MAX_LEDGER_OUTPUT_CHARS),
+            workspace_dir=workspace_dir,
+            branch=branch,
+        )
+        updated = replace(
+            task,
+            state=TASK_RUNNING,
+            baseline_sha=baseline_sha,
+            attempts=task.attempts + (attempt,),
+        )
         return self._write(replace(record, tasks=self._replace_task(record, updated)))
+
+    def record_attempt_interrupted(self, mission_id: str, task_id: str) -> MissionRecord:
+        """Close an attempt whose process died before a trusted result existed.
+
+        An interrupted attempt is terminal and never accepted: a candidate
+        commit alone proves nothing without validation, QA and the Reviewer.
+        It consumes its slot in the bound, so a crash loop cannot mint attempts.
+        """
+        record = self.load(mission_id)
+        self._require_running(record)
+        task = record.task(task_id)
+        attempt = task.open_attempt
+        if attempt is None:
+            raise MissionLedgerError(f"task {task_id} has no attempt in flight")
+        closed = replace(
+            attempt,
+            status=ATTEMPT_INTERRUPTED,
+            ended_at=_utc_now_iso(),
+            failure_detail="attempt interrupted before a trusted terminal result",
+        )
+        updated = replace(
+            task,
+            state=ATTEMPT_INTERRUPTED,
+            failure_detail=closed.failure_detail,
+            attempts=self._replace_attempt(task, closed),
+        )
+        return self._write(replace(record, tasks=self._replace_task(record, updated)))
+
+    @staticmethod
+    def _replace_attempt(
+        task: MissionTaskRecord, updated: MissionAttemptRecord
+    ) -> tuple[MissionAttemptRecord, ...]:
+        return tuple(
+            updated if a.attempt == updated.attempt else a for a in task.attempts
+        )
 
     def record_task_result(
         self, mission_id: str, result: TaskExecutionResult
@@ -503,6 +735,9 @@ class MissionStore:
         task = record.task(result.task_id)
         if task.state != TASK_RUNNING:
             raise MissionLedgerError(f"task {result.task_id} is {task.state}, not running")
+        attempt = task.open_attempt
+        if attempt is None:
+            raise MissionLedgerError(f"task {result.task_id} has no attempt in flight")
         # Collapse the reported status to a plain string first: a str
         # subclass with a rigged __eq__, or any object at all, must not be
         # able to match one allowlist entry while carrying another value.
@@ -520,9 +755,10 @@ class MissionStore:
             raise MissionLedgerError(
                 f"task {result.task_id} reported an unknown status: {status!r}"
             )
-        updated = replace(
-            task,
-            state=state,
+        closed = replace(
+            attempt,
+            status=status,
+            ended_at=_utc_now_iso(),
             candidate_sha=result.candidate_sha or "",
             changed_files=result.changed_files,
             implementation_summary=self._safe(result.implementation_summary),
@@ -530,6 +766,20 @@ class MissionStore:
             qa=_bounded_verdict(result.qa, self._safe),
             reviewer=_bounded_verdict(result.reviewer, self._safe),
             failure_detail=self._safe(result.failure_detail),
+        )
+        # The task-level fields project the LATEST attempt; the attempt list
+        # keeps every earlier one exactly as it happened.
+        updated = replace(
+            task,
+            state=state,
+            candidate_sha=closed.candidate_sha,
+            changed_files=closed.changed_files,
+            implementation_summary=closed.implementation_summary,
+            validation=closed.validation,
+            qa=closed.qa,
+            reviewer=closed.reviewer,
+            failure_detail=closed.failure_detail,
+            attempts=self._replace_attempt(task, closed),
         )
         return self._write(replace(record, tasks=self._replace_task(record, updated)))
 
@@ -673,6 +923,31 @@ class MissionStore:
             )
         )
 
+    @contextmanager
+    def execution_lock(self, mission_id: str) -> Iterator[None]:
+        """Hold the exclusive right to EXECUTE this mission.
+
+        Task execution is a long load-check-write sequence - open an attempt,
+        run it, record it, integrate - and durable writes are last-write-wins.
+        Two engines on one mission therefore lose attempt records, spend each
+        other's recovery budget, and can close a live attempt as interrupted.
+        A kernel lock makes a second engine fail closed instead, and releases
+        automatically if the holder dies, so a crash never wedges the mission.
+        """
+        self._path(mission_id)  # validates the id before it becomes a path
+        path = self.missions_dir / f"{mission_id}.execution.lock"
+        handle = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise MissionLedgerError(
+                    f"mission {mission_id} is already being executed by another process"
+                ) from exc
+            yield
+        finally:
+            os.close(handle)
+
     def _lock_path(self, mission_id: str) -> Path:
         # Deliberately not a *.json name: mission listing must not see it.
         self._path(mission_id)  # validates the id before it becomes a path
@@ -802,3 +1077,70 @@ def approve_mission(
             digest=str(digest),
             action=action,
         )
+
+
+def attempts_remaining(record: MissionRecord, task_id: str) -> int:
+    """Attempts still available to a task, derived purely from durable history."""
+    return max(0, record.max_attempts_per_task - len(record.task(task_id).attempts))
+
+
+def rebuild_task_contracts(record: MissionRecord) -> tuple[TaskContract, ...]:
+    """Rebuild the pinned plan from durable state.
+
+    Resume must never ask the planner again: the objective, the DAG, the task
+    identities, their dependencies and their required capabilities are fixed
+    when the mission is created and are replayed verbatim here.
+    """
+    contracts: list[TaskContract] = []
+    for task in record.tasks:
+        try:
+            contracts.append(
+                TaskContract(
+                    id=task.task_id,
+                    objective_id=record.objective_id,
+                    instruction=task.instruction,
+                    acceptance_criteria=task.acceptance_criteria,
+                    dependencies=task.dependencies,
+                    required_capabilities=task.required_capabilities,
+                )
+            )
+        except ValueError as exc:
+            raise MissionLedgerError(
+                f"mission {record.mission_id} task {task.task_id} cannot be rebuilt: {exc}"
+            ) from exc
+    return tuple(contracts)
+
+
+def remediation_context(attempt: MissionAttemptRecord) -> str:
+    """Bounded correction context describing why the previous attempt failed.
+
+    Correction context only: it reports what went wrong, and carries no
+    authority to change the objective, the task, its dependencies, its
+    required capabilities, or any safety policy. Everything here already
+    passed through the ledger's redaction and bounds.
+    """
+    lines: list[str] = [
+        f"A previous attempt (#{attempt.attempt}) at this exact task ended as "
+        f"{attempt.status}. Fix the specific problem below; the task, its "
+        f"acceptance criteria and its scope are unchanged."
+    ]
+    if attempt.status == STATUS_VALIDATION_FAILED:
+        for item in attempt.validation:
+            if item.get("passed"):
+                continue
+            label = item.get("label")
+            tail = str(item.get("stderr") or item.get("stdout") or "")[-800:]
+            lines.append(f"failing validation command [{label}] exit={item.get('exit_code')}")
+            if tail.strip():
+                lines.append(f"output tail: {tail}")
+    elif attempt.status == STATUS_QA_BLOCKED and attempt.qa is not None:
+        lines.append(f"QA blocked: {attempt.qa.get('summary', '')}")
+        for blocker in attempt.qa.get("blockers", []):
+            lines.append(f"QA blocker: {blocker}")
+    elif attempt.status == STATUS_REVIEWER_BLOCKED and attempt.reviewer is not None:
+        lines.append(f"Reviewer blocked: {attempt.reviewer.get('summary', '')}")
+        for blocker in attempt.reviewer.get("blockers", []):
+            lines.append(f"Reviewer blocker: {blocker}")
+    elif attempt.status == STATUS_EXECUTION_FAILED and attempt.failure_detail:
+        lines.append(f"execution failure: {attempt.failure_detail}")
+    return _clip("\n".join(lines), MAX_REMEDIATION_CHARS)

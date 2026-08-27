@@ -539,7 +539,9 @@ def test_run_blocked_mission_reports_nonzero_with_its_mission_id(
     assert output["status"] == "blocked"
     assert output["mission_id"]
     assert output["approval_required"] is False
-    assert output["blocker"]["reason"] == "qa_blocked"
+    # Bounded recovery ran and was exhausted; nothing was integrated.
+    assert output["blocker"]["reason"] == "recovery_exhausted"
+    assert output["blocker"]["task_id"] == "arith-code"
 
 
 def test_approve_by_mission_id_completes_the_gate(
@@ -767,3 +769,138 @@ def test_approve_passes_operator_revisions_through_to_the_port(
     assert record.contract_revision == "contract-9"
     assert record.roadmap_revision == "roadmap-9"
     assert record.operator == "eko" and record.decision is True
+
+
+# `doom-team resume` (T6): explicit durable re-entry
+
+
+def test_resume_cli_completes_an_interrupted_mission(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    import doom_team.cli as cli_module
+    from doom_team.mission import MISSION_AWAITING_HUMAN_APPROVAL, MissionStore
+    from tests.test_mission_recovery import CODE, GOOD_CODE, SINGLE_PLAN, AttemptScript
+    from tests.test_mission_resume import Crash
+
+    script = AttemptScript(SINGLE_PLAN, {CODE: [{"files": GOOD_CODE}]})
+    monkeypatch.setattr(
+        cli_module, "build_inference_client", lambda settings, **kwargs: script
+    )
+
+    # Interrupt the first run just before integration, like a killed process.
+    real_integrate = cli_module.MissionRunner._integrate
+
+    def crash_once(self, mission_id, task, repo, task_record):  # type: ignore[no-untyped-def]
+        raise Crash("before_integration")
+
+    monkeypatch.setattr(cli_module.MissionRunner, "_integrate", crash_once)
+    with pytest.raises(Crash):
+        main(["run", "Build it", "--destination", str(tmp_path / "d")])
+    monkeypatch.setattr(cli_module.MissionRunner, "_integrate", real_integrate)
+
+    mission_id = MissionStore(tmp_path / "state").list_ids()[0]
+    calls_before = len(script.implementer_prompts)
+
+    rc = main(["resume", mission_id])
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["mission_id"] == mission_id
+    assert output["status"] == MISSION_AWAITING_HUMAN_APPROVAL
+    assert output["approval_required"] is True
+    # The accepted task was integrated, not re-executed.
+    assert len(script.implementer_prompts) == calls_before
+    assert MissionStore(tmp_path / "state").load(mission_id).task("arith-code").integrated
+
+
+def test_resume_cli_reports_a_completed_mission_without_rerunning(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    import doom_team.cli as cli_module
+    from doom_team.mission import MISSION_AWAITING_HUMAN_APPROVAL
+
+    inference = _mission_inference()
+    monkeypatch.setattr(
+        cli_module, "build_inference_client", lambda settings, **kwargs: inference
+    )
+    assert main(["run", "Build it", "--destination", str(tmp_path / "d")]) == 0
+    mission_id = json.loads(capsys.readouterr().out)["mission_id"]
+    implemented_before = list(inference.implemented)
+
+    rc = main(["resume", mission_id])
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == MISSION_AWAITING_HUMAN_APPROVAL
+    assert inference.implemented == implemented_before  # nothing re-executed
+
+
+def test_resume_cli_unknown_mission_fails_closed(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import doom_team.cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module, "build_inference_client", lambda settings, **kwargs: _mission_inference()
+    )
+    rc = main(["resume", "mission-abcdef123456-00112233"])
+    assert rc == 4
+    assert "unknown mission" in capsys.readouterr().err
+
+
+def test_resume_cli_rejects_an_unsafe_mission_id(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import doom_team.cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module, "build_inference_client", lambda settings, **kwargs: _mission_inference()
+    )
+    rc = main(["resume", "../../etc/passwd"])
+    assert rc == 4
+    assert "unsafe mission id" in capsys.readouterr().err
+
+
+def test_resume_cli_reports_a_corrupt_ledger_as_a_state_error(
+    tmp_path: Path,
+    run_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exit codes stay honest: corrupt state is 2, not a generic run failure."""
+    import json
+
+    import doom_team.cli as cli_module
+    from doom_team.mission import MissionStore
+
+    monkeypatch.setattr(
+        cli_module, "build_inference_client", lambda settings, **kwargs: _mission_inference()
+    )
+    assert main(["run", "Build it", "--destination", str(tmp_path / "d")]) == 0
+    mission_id = json.loads(capsys.readouterr().out)["mission_id"]
+
+    path = tmp_path / "state" / "missions" / f"{mission_id}.json"
+    payload = json.loads(path.read_text())
+    payload["max_attempts_per_task"] = 99  # tamper, keep the old checksum
+    path.write_text(json.dumps(payload))
+
+    rc = main(["resume", mission_id])
+    assert rc == 2
+    assert "checksum" in capsys.readouterr().err
+    # The tampered budget was never honoured.
+    with pytest.raises(Exception):
+        MissionStore(tmp_path / "state").load(mission_id)

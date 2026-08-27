@@ -225,6 +225,42 @@ class DeliverableRepo:
     def is_clean(self) -> bool:
         return not _git(self.path, "status", "--porcelain").strip()
 
+    def contains(self, revision: str) -> bool:
+        """True when ``revision`` is already an ancestor of (or equal to) HEAD.
+
+        Git truth for crash reconciliation: it answers "was this candidate
+        already integrated?" without trusting any external bookkeeping.
+        """
+        candidate = revision.strip()
+        if not _BASELINE_SHA.fullmatch(candidate):
+            raise DeliverableError(f"revision must be a commit SHA: {revision!r}")
+        # A candidate that was never fetched is simply not here yet; that is an
+        # answer, not an error. Ask before comparing, so "unknown object" and
+        # "genuinely broken repository" stay distinguishable.
+        present = run_guarded(
+            ["git", "cat-file", "-e", f"{candidate}^{{commit}}"],
+            cwd=str(self.path),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if present.returncode != 0:
+            return False
+        completed = run_guarded(
+            ["git", "merge-base", "--is-ancestor", candidate, "HEAD"],
+            cwd=str(self.path),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode == 0:
+            return True
+        if completed.returncode == 1:
+            return False
+        raise DeliverableError(
+            f"git merge-base failed in {self.path}: {completed.stderr.strip()[:200]}"
+        )
+
     def remotes(self) -> tuple[str, ...]:
         output = _git(self.path, "remote")
         return tuple(line for line in output.splitlines() if line.strip())

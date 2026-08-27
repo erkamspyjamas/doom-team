@@ -20,10 +20,21 @@ accepted AND integrated, and the ready set is taken in deterministic task-id
 order. Nobody supplies an execution sequence or an agent role - the DAG fixes
 the order and capability routing fixes the specialist.
 
-There is no recovery here by design. A task that does not reach ``accepted``
-stops the mission cleanly with its blocker persisted and its workspace left
-on disk for inspection; dependent tasks never run and no failed candidate is
-ever integrated. Retry, remediation and resume belong to a later layer.
+Failure is bounded, not open-ended. A task that does not reach ``accepted``
+may be attempted again - from the CURRENT frontier, in a fresh workspace,
+carrying a narrow correction context describing what went wrong - until its
+durable attempt budget is spent, after which the mission stops cleanly with
+every attempt preserved. The budget is counted from persisted history, so
+restarting the process never refills it, and every terminal attempt occupies
+a slot, including provider failures and attempts lost to a crash.
+
+Interruption is survivable. ``resume`` rebuilds the plan, the routing and the
+frontier from the ledger - never from the planner and never from memory -
+closes any attempt that died mid-flight as ``interrupted`` rather than
+accepted, and reconciles the ledger against Git truth so a candidate that was
+fast-forwarded before the ledger write is recorded rather than applied twice.
+Where provenance is ambiguous the mission stops instead of guessing. One
+engine executes a mission at a time, enforced by a kernel lock.
 """
 
 from __future__ import annotations
@@ -33,14 +44,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from doom_team.deliverable import DeliverableError, DeliverableRepo
+from doom_team.deliverable import DeliverableError, DeliverableRepo, TaskWorkspace
 from doom_team.domain import Mission, TaskContract
+from doom_team.durable import StateCorruptionError
 from doom_team.mission import (
+    DEFAULT_SEMANTIC_RETRIES,
     MISSION_AWAITING_HUMAN_APPROVAL,
+    MISSION_RUNNING,
+    TASK_ACCEPTED,
     MissionLedgerError,
     MissionRecord,
     MissionStore,
+    attempts_remaining,
+    max_attempts_for,
     new_mission_id,
+    rebuild_task_contracts,
+    remediation_context,
 )
 from doom_team.observability import Event, EventSink
 from doom_team.planner import Planner, PlanningError
@@ -149,9 +168,14 @@ class MissionRunner:
         validation_commands: tuple[ValidationCommand, ...] = DEFAULT_VALIDATION_COMMANDS,
         final_validation_commands: tuple[ValidationCommand, ...] | None = None,
         event_sink: EventSink | None = None,
+        semantic_retries: int = DEFAULT_SEMANTIC_RETRIES,
     ) -> None:
         if not validation_commands:
             raise MissionRunError("a mission requires at least one validation command")
+        try:
+            self._max_attempts = max_attempts_for(semantic_retries)
+        except MissionLedgerError as exc:
+            raise MissionRunError(str(exc)) from exc
         self._inference = inference
         self._store = store
         self._workspaces_root = Path(workspaces_root)
@@ -181,6 +205,7 @@ class MissionRunner:
             objective=objective,
             plan_mission_id=mission.id,
             objective_id=mission.objective.id,
+            max_attempts_per_task=self._max_attempts,
         )
         self._emit("MISSION_STARTED", {"mission_id": mission_id, "tasks": len(mission.tasks)})
         self._store.record_plan(mission_id, mission)
@@ -199,7 +224,132 @@ class MissionRunner:
             mission_id, deliverable_path=str(repo.path), baseline_sha=repo.head()
         )
 
-        return self._execute(mission_id, mission, decisions, repo)
+        with self._store.execution_lock(mission_id):
+            return self._execute(mission_id, mission.tasks, decisions, repo)
+
+    def resume(self, mission_id: str) -> MissionRunResult:
+        """Re-enter a mission from durable state after a process interruption.
+
+        Explicit operator action, never a background daemon. Nothing is taken
+        from memory: the plan, the DAG, the routing inputs, the frontier and
+        the remaining recovery budget are all replayed from the ledger, and
+        the deliverable repository is reopened from the recorded path.
+
+        A mission that is already finished with this layer - awaiting
+        approval, approved, rejected, blocked, or failed final validation -
+        is reported, never re-executed.
+        """
+        try:
+            if not self._store.exists(mission_id):
+                raise MissionRunError(f"unknown mission: {mission_id}")
+            record = self._store.load(mission_id)
+        except MissionLedgerError as exc:
+            raise MissionRunError(str(exc)) from exc
+        except StateCorruptionError:
+            # Distinct from a run failure: the CLI maps this to a state error.
+            raise
+        if record.status != MISSION_RUNNING:
+            # Terminal for this layer: report the durable truth untouched.
+            self._emit(
+                "MISSION_RESUME_NOOP",
+                {"mission_id": mission_id, "status": record.status},
+            )
+            return self._result(record)
+
+        try:
+            repo = DeliverableRepo.open(record.deliverable_path)
+        except DeliverableError as exc:
+            return self._blocked(mission_id, "deliverable_unavailable", str(exc))
+
+        with self._store.execution_lock(mission_id):
+            return self._resume_locked(mission_id, repo)
+
+    def _resume_locked(self, mission_id: str, repo: DeliverableRepo) -> MissionRunResult:
+        """Reconcile and continue, holding the mission's execution lock."""
+        # Re-read inside the lock: another engine may have finished the
+        # mission between the status check and acquiring exclusivity.
+        record = self._store.load(mission_id)
+        if record.status != MISSION_RUNNING:
+            return self._result(record)
+
+        outcome = self._reconcile(mission_id, repo)
+        if outcome is not None:
+            return outcome
+
+        record = self._store.load(mission_id)
+        try:
+            tasks = rebuild_task_contracts(record)
+        except MissionLedgerError as exc:
+            return self._blocked(mission_id, "plan_unreadable", str(exc))
+        try:
+            decisions = {task.id: route_task(task) for task in tasks}
+        except RoutingError as exc:
+            return self._blocked(mission_id, "routing_failed", str(exc))
+
+        self._emit(
+            "MISSION_RESUMED",
+            {"mission_id": mission_id, "frontier_sha": record.frontier_sha},
+        )
+        if all(t.integrated for t in record.tasks):
+            # Every task landed; only the final gate is left to redo.
+            return self._finalize(mission_id, repo)
+        return self._execute(mission_id, tasks, decisions, repo)
+
+    def _reconcile(self, mission_id: str, repo: DeliverableRepo) -> MissionRunResult | None:
+        """Reconcile durable state with Git truth before resuming execution.
+
+        Three crash windows matter here. An attempt still marked in flight had
+        no trusted terminal result, so it is closed as interrupted - never as
+        accepted, whatever files or commits it left behind. An accepted
+        candidate that Git shows is already an ancestor of the deliverable was
+        integrated before the ledger write, so the ledger is caught up instead
+        of the commit being applied twice. Anything else that moved the
+        deliverable is unexplained, and unexplained provenance stops the
+        mission rather than guessing.
+        """
+        record = self._store.load(mission_id)
+        for task in record.tasks:
+            if task.open_attempt is not None:
+                self._store.record_attempt_interrupted(mission_id, task.task_id)
+                self._emit(
+                    "ATTEMPT_INTERRUPTED",
+                    {"mission_id": mission_id, "task_id": task.task_id},
+                )
+
+        record = self._store.load(mission_id)
+        for task in record.tasks:
+            if task.state != TASK_ACCEPTED or not task.candidate_sha:
+                continue
+            try:
+                already_in = repo.contains(task.candidate_sha)
+            except DeliverableError as exc:
+                return self._blocked(mission_id, "reconcile_failed", str(exc), task.task_id)
+            if already_in:
+                # Advance to the CANDIDATE, not to today's head. Anything
+                # stacked on top while the mission was down is unreviewed, and
+                # adopting it here would smuggle it past QA and the Reviewer;
+                # the head check below turns that into a fail-closed block.
+                self._store.record_frontier_advanced(
+                    mission_id, task.task_id, frontier_sha=task.candidate_sha
+                )
+                self._emit(
+                    "INTEGRATION_RECONCILED",
+                    {"mission_id": mission_id, "task_id": task.task_id},
+                )
+
+        record = self._store.load(mission_id)
+        try:
+            head = repo.head()
+        except DeliverableError as exc:
+            return self._blocked(mission_id, "deliverable_unavailable", str(exc))
+        if head != record.frontier_sha:
+            return self._blocked(
+                mission_id,
+                "frontier_ambiguous",
+                f"deliverable head {head} does not match the mission frontier "
+                f"{record.frontier_sha} and is not explained by any recorded candidate",
+            )
+        return None
 
     def _plan(self, objective: str) -> Mission:
         try:
@@ -249,13 +399,14 @@ class MissionRunner:
     def _execute(
         self,
         mission_id: str,
-        mission: Mission,
+        tasks: tuple[TaskContract, ...],
         decisions: dict[str, RoutingDecision],
         repo: DeliverableRepo,
     ) -> MissionRunResult:
-        by_id = {task.id: task for task in mission.tasks}
-        accepted: set[str] = set()
-        remaining = [task.id for task in mission.tasks]
+        by_id = {task.id: task for task in tasks}
+        record = self._store.load(mission_id)
+        accepted = {t.task_id for t in record.tasks if t.integrated}
+        remaining = [task.id for task in tasks if task.id not in accepted]
 
         while remaining:
             ready = self._ready(remaining, by_id, accepted)
@@ -297,29 +448,101 @@ class MissionRunner:
         repo: DeliverableRepo,
         accepted: set[str],
     ) -> MissionRunResult | None:
-        """Run one task; returns a terminal result only when the mission stops."""
+        """Drive one task to acceptance within its bounded attempt budget.
+
+        Returns None when the task is integrated and the mission may continue,
+        or a terminal mission result when it cannot. Every attempt starts from
+        the CURRENT frontier in a fresh workspace: a failed attempt's dirty
+        workspace is preserved for inspection but never becomes the base of
+        the next one.
+        """
+        while True:
+            record = self._store.load(mission_id)
+            task_record = record.task(task.id)
+
+            if task_record.integrated:
+                return None
+            # Crashed after acceptance but before integration: the work is
+            # already trusted, so finish the integration rather than re-run it.
+            if task_record.state == TASK_ACCEPTED:
+                outcome = self._integrate(mission_id, task, repo, task_record)
+                if outcome is not None:
+                    return outcome
+                return None
+
+            if attempts_remaining(record, task.id) <= 0:
+                last = task_record.attempts[-1] if task_record.attempts else None
+                return self._blocked(
+                    mission_id,
+                    "recovery_exhausted",
+                    (
+                        f"task {task.id} used all {record.max_attempts_per_task} "
+                        f"attempts; last outcome {task_record.state}"
+                        + (f": {last.failure_detail}" if last and last.failure_detail else "")
+                    ),
+                    task.id,
+                )
+
+            outcome = self._one_attempt(mission_id, task, decision, repo, accepted)
+            if outcome is not None:
+                return outcome
+            # Loop: either the task is now accepted/integrated, or a fresh
+            # bounded attempt follows if any budget remains.
+
+    def _one_attempt(
+        self,
+        mission_id: str,
+        task: TaskContract,
+        decision: RoutingDecision,
+        repo: DeliverableRepo,
+        accepted: set[str],
+    ) -> MissionRunResult | None:
+        """Execute exactly one attempt. Returns a result only to stop the mission."""
+        record = self._store.load(mission_id)
+        task_record = record.task(task.id)
         frontier = repo.head()
+        if frontier != record.frontier_sha:
+            return self._blocked(
+                mission_id,
+                "frontier_moved",
+                f"deliverable head {frontier} is not the mission frontier "
+                f"{record.frontier_sha}",
+                task.id,
+            )
         try:
             specialist = specialist_by_id(decision.specialist_id)
         except RoutingError as exc:
             return self._blocked(mission_id, "routing_failed", str(exc), task.id)
+
+        previous = task_record.attempts[-1] if task_record.attempts else None
+        remediation = remediation_context(previous) if previous is not None else ""
         try:
-            # The workspace baseline IS the current frontier, so every task
-            # builds on the integrated work of its dependencies.
+            # A fresh workspace at the CURRENT frontier - never the failed one.
             workspace = repo.create_task_workspace(
                 task.id, self._workspaces_root, baseline_sha=frontier
             )
         except DeliverableError as exc:
             return self._blocked(mission_id, "workspace_failed", str(exc), task.id)
 
-        self._store.record_task_started(mission_id, task.id, baseline_sha=frontier)
+        self._store.record_task_started(
+            mission_id,
+            task.id,
+            baseline_sha=frontier,
+            specialist_id=decision.specialist_id,
+            remediation=remediation,
+            workspace_dir=workspace.path.name,
+            branch=workspace.branch,
+        )
+        attempt_number = len(self._store.load(mission_id).task(task.id).attempts)
         self._emit(
-            "TASK_STARTED",
+            "TASK_ATTEMPT_STARTED",
             {
                 "mission_id": mission_id,
                 "task_id": task.id,
+                "attempt": attempt_number,
                 "specialist_id": decision.specialist_id,
                 "baseline_sha": frontier,
+                "remediated": bool(remediation),
             },
         )
         try:
@@ -330,27 +553,76 @@ class MissionRunner:
                 workspace,
                 objective_summary=self._objective_summary(mission_id),
                 dependency_summary=self._dependency_summary(accepted),
+                remediation_summary=remediation,
             )
         except TaskRunnerError as exc:
             return self._blocked(mission_id, "task_runner_error", str(exc), task.id)
 
         self._store.record_task_result(mission_id, result)
         self._emit(
-            "TASK_FINISHED",
-            {"mission_id": mission_id, "task_id": task.id, "status": result.status},
+            "TASK_ATTEMPT_FINISHED",
+            {
+                "mission_id": mission_id,
+                "task_id": task.id,
+                "attempt": attempt_number,
+                "status": result.status,
+            },
         )
         if result.status != STATUS_ACCEPTED:
-            # No retry, no remediation: the candidate stays out of the
-            # deliverable and the workspace is preserved for inspection.
-            return self._blocked(
-                mission_id,
-                result.status,
-                result.failure_detail or f"task {task.id} did not reach accepted",
-                task.id,
-            )
+            # No integration of failed work, ever. The caller decides whether
+            # the bound permits another attempt.
+            return None
+        return self._integrate(
+            mission_id, task, repo, self._store.load(mission_id).task(task.id)
+        )
 
+    def _integrate(
+        self,
+        mission_id: str,
+        task: TaskContract,
+        repo: DeliverableRepo,
+        task_record: Any,
+    ) -> MissionRunResult | None:
+        """Advance the frontier exactly once for an accepted candidate.
+
+        Git is the authority on whether the candidate already landed: a crash
+        between the fast-forward and the ledger write leaves the commit in the
+        deliverable, and re-fetching it would be a no-op at best, so the
+        integration is reconciled rather than repeated.
+        """
+        candidate = task_record.candidate_sha
+        if not candidate:
+            return self._blocked(
+                mission_id, "candidate_missing", f"task {task.id} has no candidate", task.id
+            )
         try:
-            frontier_sha = repo.integrate_candidate(workspace)
+            if repo.contains(candidate):
+                # Already landed (a crash between the fast-forward and the
+                # ledger write). The frontier is the candidate itself.
+                frontier_sha = candidate
+            else:
+                workspace = self._workspace_for(task, task_record)
+                # The workspace is preserved on disk between attempts and
+                # across restarts, so its branch tip is not self-evidently the
+                # commit that was reviewed. Integrate only that exact commit.
+                tip = workspace.candidate_sha()
+                if tip != candidate:
+                    return self._blocked(
+                        mission_id,
+                        "candidate_mismatch",
+                        f"workspace branch tip {tip} is not the accepted candidate "
+                        f"{candidate}",
+                        task.id,
+                    )
+                frontier_sha = repo.integrate_candidate(workspace)
+                if frontier_sha != candidate:
+                    return self._blocked(
+                        mission_id,
+                        "integration_diverged",
+                        f"integration produced {frontier_sha}, not the accepted "
+                        f"candidate {candidate}",
+                        task.id,
+                    )
         except DeliverableError as exc:
             return self._blocked(mission_id, "integration_failed", str(exc), task.id)
         self._store.record_frontier_advanced(mission_id, task.id, frontier_sha=frontier_sha)
@@ -359,6 +631,21 @@ class MissionRunner:
             {"mission_id": mission_id, "task_id": task.id, "frontier_sha": frontier_sha},
         )
         return None
+
+    def _workspace_for(self, task: TaskContract, task_record: Any) -> TaskWorkspace:
+        """Rebuild the workspace handle of the accepted attempt."""
+        attempt = task_record.accepted_attempt
+        if attempt is None or not attempt.workspace_dir:
+            raise DeliverableError(f"task {task.id} has no recorded workspace to integrate")
+        path = self._workspaces_root / attempt.workspace_dir
+        if not (path / ".git").is_dir():
+            raise DeliverableError(f"workspace {attempt.workspace_dir} is no longer available")
+        return TaskWorkspace(
+            task_id=task.id,
+            path=path,
+            baseline_sha=attempt.baseline_sha,
+            branch=attempt.branch,
+        )
 
     def _objective_summary(self, mission_id: str) -> str:
         return self._store.load(mission_id).objective

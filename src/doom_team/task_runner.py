@@ -382,6 +382,7 @@ class ProductionTaskRunner:
         *,
         objective_summary: str = "",
         dependency_summary: str = "",
+        remediation_summary: str = "",
     ) -> TaskExecutionResult:
         if decision.task_id != task.id:
             raise TaskRunnerError("routing decision does not belong to this task")
@@ -435,6 +436,15 @@ class ProductionTaskRunner:
                                     implementer_nonce,
                                     "routing rationale",
                                     decision.rationale,
+                                ),
+                                # Correction context from an earlier failed
+                                # attempt at this same task. Data like
+                                # everything else framed here: it reports what
+                                # went wrong and cannot redefine the task.
+                                _untrusted(
+                                    implementer_nonce,
+                                    "previous attempt feedback",
+                                    remediation_summary or "(none)",
                                 ),
                                 _untrusted(
                                     implementer_nonce,

@@ -21,6 +21,7 @@ import sys
 import threading
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from doom_team.approval import DurableApprovalPort
 from doom_team.backup import backup_state, restore_state
@@ -30,6 +31,8 @@ from doom_team.evidence import DurableEvidenceStore
 from doom_team.inference import build_inference_client
 from doom_team.mission import (
     MISSION_ACTION_PREFIX,
+    MISSION_APPROVED,
+    MISSION_AWAITING_HUMAN_APPROVAL,
     MissionLedgerError,
     MissionStore,
     approve_mission,
@@ -91,6 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Deliverable repository path (required unless --plan-only)",
     )
+
+    resume_parser = subparsers.add_parser(
+        "resume", help="Resume an interrupted mission from durable state"
+    )
+    _add_state_dir(resume_parser)
+    resume_parser.add_argument("mission_id", help="Durable mission identity")
 
     serve_parser = subparsers.add_parser(
         "serve", help="Run the service loop with graceful shutdown"
@@ -238,13 +247,7 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
-    store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
-    runner = MissionRunner(
-        client,
-        store,
-        workspaces_root=settings.state_dir / "workspaces",
-        event_sink=_make_event_sink(settings),
-    )
+    runner = _build_mission_runner(settings, client)
     try:
         result = runner.run(objective, destination)
     except MissionRunError as exc:
@@ -257,6 +260,51 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
     if not result.awaiting_approval:
         return EXIT_RUN_ERROR
     return EXIT_SUCCESS
+
+
+def _build_mission_runner(settings: Settings, client: Any) -> MissionRunner:
+    """The one mission runtime, shared by `run` and `resume`.
+
+    The recovery budget is the operator's configured semantic retry policy,
+    so both entry points bound attempts identically.
+    """
+    store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
+    return MissionRunner(
+        client,
+        store,
+        workspaces_root=settings.state_dir / "workspaces",
+        event_sink=_make_event_sink(settings),
+        semantic_retries=settings.semantic_retries,
+    )
+
+
+def _cmd_resume(settings: Settings, mission_id: str) -> int:
+    """Re-enter one interrupted mission by its durable identity.
+
+    Explicit operator action only: nothing resumes on its own, and a mission
+    that already finished with this layer is reported rather than re-run.
+    """
+    try:
+        client = build_inference_client(settings)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    runner = _build_mission_runner(settings, client)
+    try:
+        result = runner.resume(mission_id)
+    except MissionRunError as exc:
+        print(f"resume: {exc}", file=sys.stderr)
+        return EXIT_RUN_ERROR
+    except StateCorruptionError as exc:
+        print(f"resume: mission state unreadable: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    except (MissionLedgerError, OSError) as exc:
+        print(f"resume: mission state error: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    print(json.dumps(result.as_dict(), sort_keys=True))
+    if result.status in (MISSION_AWAITING_HUMAN_APPROVAL, MISSION_APPROVED):
+        return EXIT_SUCCESS
+    return EXIT_RUN_ERROR
 
 
 def _cmd_serve(settings: Settings) -> int:
@@ -507,6 +555,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
+    if args.command == "resume":
+        return _cmd_resume(settings, args.mission_id)
     if args.command == "run":
         return _cmd_run(
             settings,
