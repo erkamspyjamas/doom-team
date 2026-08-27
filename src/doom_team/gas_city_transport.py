@@ -24,10 +24,12 @@ import datetime
 import json
 import os
 import re
+import fcntl
 import secrets
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,10 @@ from doom_team.transport import (
 )
 
 DEFAULT_ATTEMPT_TIMEOUT = 900.0
+# A claim cannot be addressed at a specific work item, so the agent's queue
+# must hold only ours when the worker claims. Draining is bounded: an endless
+# supply of foreign items is a misconfigured city, not something to spin on.
+MAX_STALE_RELEASES = 16
 MAX_DIAGNOSTIC_CHARS = 2_000
 
 # Job directories are built from these, so they must be plain identifiers.
@@ -225,32 +231,32 @@ class GasCityTaskTransport:
             # A per-attempt secret binds the result to this request.
             request = replace(request, nonce=secrets.token_hex(16))
 
-            # An item left in progress by an earlier crash would be handed to
-            # the worker instead of this attempt's, because a claim cannot be
-            # addressed at a specific item. Release it first.
-            self._release_stale()
+            with self._city_turn():
+                # Anything already routed to the agent would be handed to our
+                # worker instead of our own item, so the queue is cleared
+                # first and held for the whole submit-claim-complete cycle.
+                self._release_stale()
+                job_id = self._submit(request)
+                envelope = request.to_dict()
+                envelope["gas_city"] = {
+                    "city": str(self._city),
+                    "agent": self._agent,
+                    "bead_id": job_id,
+                    "gc_binary": self._gc,
+                }
+                request_path = job_dir / "request.json"
+                request_path.write_text(json.dumps(envelope, sort_keys=True, indent=2))
+                self._emit(
+                    "TRANSPORT_SUBMITTED",
+                    {
+                        "mission_id": request.mission_id,
+                        "task_id": request.task_id,
+                        "attempt": request.attempt,
+                        "job_id": job_id,
+                    },
+                )
+                detail = self._run_worker(request_path, result_path)
 
-            job_id = self._submit(request)
-            envelope = request.to_dict()
-            envelope["gas_city"] = {
-                "city": str(self._city),
-                "agent": self._agent,
-                "bead_id": job_id,
-                "gc_binary": self._gc,
-            }
-            request_path = job_dir / "request.json"
-            request_path.write_text(json.dumps(envelope, sort_keys=True, indent=2))
-            self._emit(
-                "TRANSPORT_SUBMITTED",
-                {
-                    "mission_id": request.mission_id,
-                    "task_id": request.task_id,
-                    "attempt": request.attempt,
-                    "job_id": job_id,
-                },
-            )
-
-            detail = self._run_worker(request_path, result_path)
             if detail:
                 self._finish(request, "worker_failed", submitted, detail, job_id)
                 return transport_failure(request, self._scrub(detail))
@@ -271,20 +277,46 @@ class GasCityTaskTransport:
                 self._close(job_id, "shipped")
 
     def _release_stale(self) -> None:
-        """Complete any work item this agent still holds from an earlier run."""
-        try:
-            completed = run_guarded(
-                [self._gc, "hook", "--city", str(self._city), "--claim", "--json",
-                 self._agent],
-                cwd=str(self._city), check=False, text=True, capture_output=True,
-                timeout=120.0, env=self._gc_env,
-            )
-            payload = json.loads(completed.stdout) if completed.stdout.strip() else {}
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-            return
-        stale = str(payload.get("bead_id", ""))
-        if stale and payload.get("reason") in ("existing_assignment", "claimed"):
+        """Clear the agent's queue of work items that are not this attempt's.
+
+        Anything already routed to the agent - left by a crash, or by another
+        run sharing this city - would otherwise be handed to our worker
+        instead of our own item, costing a real attempt from the mission's
+        bounded budget for work it never did.
+        """
+        for _ in range(MAX_STALE_RELEASES):
+            try:
+                completed = run_guarded(
+                    [self._gc, "hook", "--city", str(self._city), "--claim", "--json",
+                     self._agent],
+                    cwd=str(self._city), check=False, text=True, capture_output=True,
+                    timeout=120.0, env=self._gc_env,
+                )
+                payload = json.loads(completed.stdout) if completed.stdout.strip() else {}
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                return
+            stale = str(payload.get("bead_id", ""))
+            if not stale or payload.get("reason") not in ("existing_assignment", "claimed"):
+                return
             self._close(stale, "abandoned")
+
+    @contextmanager
+    def _city_turn(self) -> Iterator[None]:
+        """Hold the city's single work queue for one attempt.
+
+        Gas City routes to one agent slot, so two missions sharing a city
+        would otherwise claim each other's items. A kernel lock keeps
+        submit-claim-complete atomic per city, and it is released
+        automatically if the holder dies.
+        """
+        self._city.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(self._city / ".doom-team-queue.lock"),
+                         os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(handle)
 
     def _run_worker(self, request_path: Path, result_path: Path) -> str:
         """Launch the worker once. Returns a failure detail, or "" on success."""

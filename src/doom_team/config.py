@@ -13,14 +13,24 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from doom_team.subprocess_guard import SENSITIVE_SUBSTRINGS, is_sensitive_env_key
+
 
 class ConfigError(Exception):
     """Raised when configuration is invalid or required values are missing."""
+
+
+TRANSPORT_IN_PROCESS = "in_process"
+TRANSPORT_GAS_CITY = "gas_city"
+TASK_TRANSPORTS = frozenset({TRANSPORT_IN_PROCESS, TRANSPORT_GAS_CITY})
+
+_SAFE_AGENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$")
 
 
 def _env_name(setting: str) -> str:
@@ -64,6 +74,13 @@ class Settings:
     allow_fallbacks: bool = True
     request_timeout: float = 60.0
     provider_base_url: str | None = None
+    # Where task attempts execute. Trusted operator configuration: a task
+    # attempt can name WHICH policy applies, never where or what runs.
+    task_transport: str = TRANSPORT_IN_PROCESS
+    gas_city_binary: str | None = None
+    gas_city_city: str | None = None
+    gas_city_agent: str = "mayor"
+    gas_city_attempt_timeout: float = 900.0
     _api_key: str = field(repr=False, default="")
 
     def redact(self, value: str) -> str:
@@ -87,7 +104,9 @@ class Settings:
             f"forbidden_providers={self.forbidden_providers} "
             f"allow_fallbacks={self.allow_fallbacks} "
             f"request_timeout={self.request_timeout} "
-            f"provider_base_url={self.provider_base_url} credential=[REDACTED]"
+            f"provider_base_url={self.provider_base_url} "
+            f"task_transport={self.task_transport} "
+            f"gas_city_city={self.gas_city_city} credential=[REDACTED]"
         )
 
     def as_evidence_dict(self) -> dict[str, Any]:
@@ -103,6 +122,9 @@ class Settings:
             "forbidden_providers": list(self.forbidden_providers),
             "allow_fallbacks": self.allow_fallbacks,
             "request_timeout": self.request_timeout,
+            "task_transport": self.task_transport,
+            "gas_city_city": self.gas_city_city,
+            "gas_city_agent": self.gas_city_agent,
             "provider_base_url": self.provider_base_url,
             "credential": "[REDACTED]",
         }
@@ -138,6 +160,11 @@ class ConfigLoader:
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
         provider_base_url: str | None = None,
+        task_transport: str | None = None,
+        gas_city_binary: str | None = None,
+        gas_city_city: str | None = None,
+        gas_city_agent: str | None = None,
+        gas_city_attempt_timeout: float | None = None,
         config_file: str | Path | None = None,
     ) -> Settings:
         """Load and validate settings; raises :class:`ConfigError` on failure."""
@@ -261,12 +288,76 @@ class ConfigLoader:
                     f"provider_base_url must be an http(s) URL: {base_url_value!r}"
                 )
 
+        transport = str(
+            task_transport
+            or env_value("task_transport")
+            or file_values.get("task_transport")
+            or TRANSPORT_IN_PROCESS
+        )
+        if transport not in TASK_TRANSPORTS:
+            raise ConfigError(
+                f"task_transport must be one of {sorted(TASK_TRANSPORTS)}: {transport!r}"
+            )
+        gc_binary = (
+            gas_city_binary
+            or env_value("gas_city_binary")
+            or file_values.get("gas_city_binary")
+        )
+        gc_city = (
+            gas_city_city or env_value("gas_city_city") or file_values.get("gas_city_city")
+        )
+        gc_agent = str(
+            gas_city_agent
+            or env_value("gas_city_agent")
+            or file_values.get("gas_city_agent")
+            or "mayor"
+        )
+        gc_timeout_raw = (
+            gas_city_attempt_timeout
+            or env_value("gas_city_attempt_timeout")
+            or file_values.get("gas_city_attempt_timeout")
+            or 900.0
+        )
+        try:
+            gc_timeout = float(gc_timeout_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"gas_city_attempt_timeout must be a number: {gc_timeout_raw!r}"
+            ) from exc
+        if gc_timeout <= 0:
+            raise ConfigError("gas_city_attempt_timeout must be positive")
+        if transport == TRANSPORT_GAS_CITY:
+            # Fail closed: choosing Gas City execution without saying WHICH
+            # Gas City would otherwise be resolved at run time from ambient
+            # state, and the runtime must never guess that.
+            if not gc_binary:
+                raise ConfigError("gas_city_binary is required when task_transport=gas_city")
+            if not gc_city:
+                raise ConfigError("gas_city_city is required when task_transport=gas_city")
+            for label, value in (("gas_city_binary", gc_binary), ("gas_city_city", gc_city)):
+                if not Path(str(value)).is_absolute():
+                    raise ConfigError(f"{label} must be an absolute path: {value!r}")
+            if not os.access(str(gc_binary), os.X_OK):
+                raise ConfigError(f"gas_city_binary is not executable: {gc_binary!r}")
+            if not _SAFE_AGENT.fullmatch(gc_agent):
+                raise ConfigError(f"gas_city_agent must be a simple name: {gc_agent!r}")
+
         api_key_env = (
             provider_api_key_env
             or env_value("provider_api_key_env")
             or file_values.get("provider_api_key_env")
             or "DOOM_API_KEY"
         )
+        # The subprocess guard strips credentials from children by NAME. A
+        # credential parked in a variable the guard does not recognize would
+        # be inherited by model-authored validation code, so only names the
+        # guard will actually strip are accepted.
+        if not is_sensitive_env_key(api_key_env):
+            raise ConfigError(
+                f"provider_api_key_env {api_key_env!r} would not be stripped from "
+                "child processes; use a name containing one of "
+                f"{', '.join(sorted(SENSITIVE_SUBSTRINGS))}"
+            )
         api_key = os.environ.get(api_key_env, "")
         if not api_key:
             raise ConfigError(f"credential environment variable {api_key_env} must be set")
@@ -283,6 +374,11 @@ class ConfigLoader:
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
             provider_base_url=base_url_value,
+            task_transport=transport,
+            gas_city_binary=str(gc_binary) if gc_binary else None,
+            gas_city_city=str(gc_city) if gc_city else None,
+            gas_city_agent=gc_agent,
+            gas_city_attempt_timeout=gc_timeout,
             _api_key=api_key,
         )
 

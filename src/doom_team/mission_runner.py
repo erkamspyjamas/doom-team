@@ -85,7 +85,16 @@ FINAL_VALIDATION_TASK_ID = "final-validation"
 # are OUR commands, never anything the model authored.
 DEFAULT_VALIDATION_COMMANDS: tuple[ValidationCommand, ...] = (
     ValidationCommand(label="compile", argv=(sys.executable, "-m", "compileall", "-q", ".")),
-    ValidationCommand(label="tests", argv=(sys.executable, "-m", "pytest", "-q")),
+    ValidationCommand(label="tests", argv=(
+        sys.executable, "-m", "pytest", "-q",
+        # Pin discovery to the tree under test. Validation runs
+        # model-authored code with no sandbox, and a pytest.ini plus a
+        # conftest planted in a PARENT directory would otherwise be
+        # loaded and could rewrite the session exit status - turning a
+        # failing suite into a passing one, for this run and every later
+        # one sharing that parent.
+        "-p", "no:cacheprovider", "--confcutdir=.", "--rootdir=.",
+    )),
 )
 
 
@@ -129,6 +138,7 @@ class MissionRunResult:
             "baseline_sha": record.baseline_sha,
             "frontier_sha": self.frontier_sha,
             "final_frontier_sha": record.final_frontier_sha,
+            "task_transport": record.task_transport,
             "approval_required": self.approval_required,
             "blocker": record.blocker,
             "tasks": [
@@ -178,6 +188,7 @@ class MissionRunner:
         semantic_retries: int = DEFAULT_SEMANTIC_RETRIES,
         transport: TaskExecutionTransport | None = None,
         validation_policy: str = "default",
+        transport_name: str = "",
     ) -> None:
         if not validation_commands:
             raise MissionRunError("a mission requires at least one validation command")
@@ -205,6 +216,9 @@ class MissionRunner:
             transport if transport is not None else InProcessTaskTransport(self._task_runner)
         )
         self._validation_policy = validation_policy
+        self._transport_name = transport_name or (
+            "gas_city" if transport is not None else "in_process"
+        )
 
     def _emit(self, kind: str, details: dict[str, Any]) -> None:
         if self._event_sink is not None:
@@ -222,6 +236,7 @@ class MissionRunner:
             plan_mission_id=mission.id,
             objective_id=mission.objective.id,
             max_attempts_per_task=self._max_attempts,
+            task_transport=self._transport_name,
         )
         self._emit("MISSION_STARTED", {"mission_id": mission_id, "tasks": len(mission.tasks)})
         self._store.record_plan(mission_id, mission)
@@ -271,6 +286,18 @@ class MissionRunner:
                 {"mission_id": mission_id, "status": record.status},
             )
             return self._result(record)
+
+        # A mission is finished by the transport that started it. Resuming a
+        # Gas City mission with a locally-configured in-process runtime would
+        # silently move the remaining work somewhere else, and the ledger
+        # would not show it happened.
+        if record.task_transport and record.task_transport != self._transport_name:
+            return self._blocked(
+                mission_id,
+                "transport_mismatch",
+                f"mission ran on the {record.task_transport!r} transport but this "
+                f"runtime is configured for {self._transport_name!r}",
+            )
 
         try:
             repo = DeliverableRepo.open(record.deliverable_path)

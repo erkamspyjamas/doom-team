@@ -53,7 +53,16 @@ _SAFE_DIR_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 VALIDATION_POLICIES: dict[str, tuple[ValidationCommand, ...]] = {
     "default": (
         ValidationCommand(label="compile", argv=(sys.executable, "-m", "compileall", "-q", ".")),
-        ValidationCommand(label="tests", argv=(sys.executable, "-m", "pytest", "-q")),
+        ValidationCommand(label="tests", argv=(
+            sys.executable, "-m", "pytest", "-q",
+            # Pin discovery to the tree under test. Validation runs
+            # model-authored code with no sandbox, and a pytest.ini plus a
+            # conftest planted in a PARENT directory would otherwise be
+            # loaded and could rewrite the session exit status - turning a
+            # failing suite into a passing one, for this run and every later
+            # one sharing that parent.
+            "-p", "no:cacheprovider", "--confcutdir=.", "--rootdir=.",
+        )),
     ),
     "compile-only": (
         ValidationCommand(label="compile", argv=(sys.executable, "-m", "compileall", "-q", ".")),

@@ -371,6 +371,9 @@ class MissionRecord:
     final_frontier_sha: str = ""
     final_validation_sha: str = ""
     max_attempts_per_task: int = 0
+    # Which transport executed this mission's attempts. Recorded so a later
+    # resume cannot quietly run the rest of the work somewhere else.
+    task_transport: str = ""
     tasks: tuple[MissionTaskRecord, ...] = ()
     routing: tuple[dict[str, Any], ...] = ()
     final_validation: tuple[dict[str, Any], ...] | None = None
@@ -415,6 +418,7 @@ class MissionRecord:
             "final_frontier_sha": self.final_frontier_sha,
             "final_validation_sha": self.final_validation_sha,
             "max_attempts_per_task": self.max_attempts_per_task,
+            "task_transport": self.task_transport,
             "tasks": [task.to_dict() for task in self.tasks],
             "routing": [dict(item) for item in self.routing],
             "final_validation": (
@@ -448,6 +452,7 @@ class MissionRecord:
             max_attempts_per_task=(
                 int(data.get("max_attempts_per_task") or DEFAULT_MAX_ATTEMPTS_PER_TASK)
             ),
+            task_transport=str(data.get("task_transport", "")),
             tasks=tuple(MissionTaskRecord.from_dict(t) for t in data.get("tasks", ())),
             routing=tuple(dict(item) for item in data.get("routing", ())),
             final_validation=(
@@ -547,6 +552,7 @@ class MissionStore:
         plan_mission_id: str,
         objective_id: str,
         max_attempts_per_task: int = DEFAULT_MAX_ATTEMPTS_PER_TASK,
+        task_transport: str = "",
     ) -> MissionRecord:
         """Create a brand-new mission record; never overwrites an existing one."""
         if self.exists(mission_id):
@@ -565,6 +571,7 @@ class MissionStore:
                 updated_at=now,
                 status=MISSION_RUNNING,
                 max_attempts_per_task=max_attempts_per_task,
+                task_transport=task_transport,
             )
         )
 

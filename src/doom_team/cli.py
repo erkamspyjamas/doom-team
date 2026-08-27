@@ -39,6 +39,7 @@ from doom_team.mission import (
 )
 from doom_team.mission_runner import MissionRunError, MissionRunner
 from doom_team.planner import Planner, PlanningError
+from doom_team.runtime import RuntimeError_, build_task_execution_transport
 from doom_team.routing import RoutingError, route_task
 from doom_team.observability import (
     DurableEventSink,
@@ -247,7 +248,11 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
-    runner = _build_mission_runner(settings, client)
+    try:
+        runner = _build_mission_runner(settings, client)
+    except (RuntimeError_, ConfigError) as exc:
+        print(f"run: task transport unavailable: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
     try:
         result = runner.run(objective, destination)
     except MissionRunError as exc:
@@ -256,7 +261,9 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
     except (MissionLedgerError, OSError) as exc:
         print(f"run: mission state error: {exc}", file=sys.stderr)
         return EXIT_STATE_ERROR
-    print(json.dumps(result.as_dict(), sort_keys=True))
+    output = result.as_dict()
+    output["task_transport"] = settings.task_transport
+    print(json.dumps(output, sort_keys=True))
     if not result.awaiting_approval:
         return EXIT_RUN_ERROR
     return EXIT_SUCCESS
@@ -265,16 +272,21 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
 def _build_mission_runner(settings: Settings, client: Any) -> MissionRunner:
     """The one mission runtime, shared by `run` and `resume`.
 
-    The recovery budget is the operator's configured semantic retry policy,
-    so both entry points bound attempts identically.
+    The recovery budget is the operator's configured semantic retry policy and
+    the execution transport is the operator's configured choice, so both entry
+    points bound attempts and run work identically.
     """
     store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
+    sink = _make_event_sink(settings)
+    transport = build_task_execution_transport(settings, client, event_sink=sink)
     return MissionRunner(
         client,
         store,
         workspaces_root=settings.state_dir / "workspaces",
-        event_sink=_make_event_sink(settings),
+        event_sink=sink,
         semantic_retries=settings.semantic_retries,
+        transport=transport,
+        transport_name=settings.task_transport,
     )
 
 
@@ -289,7 +301,11 @@ def _cmd_resume(settings: Settings, mission_id: str) -> int:
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
-    runner = _build_mission_runner(settings, client)
+    try:
+        runner = _build_mission_runner(settings, client)
+    except (RuntimeError_, ConfigError) as exc:
+        print(f"resume: task transport unavailable: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
     try:
         result = runner.resume(mission_id)
     except MissionRunError as exc:
@@ -301,7 +317,9 @@ def _cmd_resume(settings: Settings, mission_id: str) -> int:
     except (MissionLedgerError, OSError) as exc:
         print(f"resume: mission state error: {exc}", file=sys.stderr)
         return EXIT_STATE_ERROR
-    print(json.dumps(result.as_dict(), sort_keys=True))
+    output = result.as_dict()
+    output["task_transport"] = settings.task_transport
+    print(json.dumps(output, sort_keys=True))
     if result.status in (MISSION_AWAITING_HUMAN_APPROVAL, MISSION_APPROVED):
         return EXIT_SUCCESS
     return EXIT_RUN_ERROR
@@ -363,6 +381,9 @@ def _cmd_status(settings: Settings) -> int:
     print(f"model_name: {settings.model_name}")
     print(f"runtime: {settings.runtime}")
     print(f"semantic_retries: {settings.semantic_retries}")
+    print(f"task_transport: {settings.task_transport}")
+    if settings.gas_city_city:
+        print(f"gas_city_city: {settings.gas_city_city}")
     print(f"evidence records: {evidence_count}")
     print(f"verdict records: {verdict_count}")
     print(f"recovery state file: {'present' if recovery_path.exists() else 'absent'}")
@@ -408,6 +429,15 @@ def _cmd_doctor(settings: Settings) -> int:
     if not ready:
         print(f"doctor: {ready_msg}", file=sys.stderr)
         return 3
+    # Readiness must include where work would actually run: reporting a
+    # healthy service whose configured transport cannot be built would send
+    # the operator into a mission that fails on its first attempt.
+    try:
+        build_task_execution_transport(settings, None)  # type: ignore[arg-type]
+    except (RuntimeError_, ConfigError) as exc:
+        print(f"doctor: task transport unusable: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    print(f"doctor: task_transport {settings.task_transport} usable")
 
     print(f"doctor: {health_msg}")
     print(f"doctor: {ready_msg}")

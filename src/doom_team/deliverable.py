@@ -231,6 +231,10 @@ class DeliverableRepo:
                 raise DeliverableError(f"destination parent {dest.parent} does not exist")
             dest.mkdir()
         _git(dest, "init", "-q", "-b", "main")
+        # The same pin workspaces get. The deliverable is what a human
+        # inspects and approves, so committed content must not be able to
+        # hide its own diff or rewrite how it renders.
+        _write_workspace_attributes(dest)
         _git(dest, "config", "user.name", _GIT_IDENTITY[0])
         _git(dest, "config", "user.email", _GIT_IDENTITY[1])
         _git(dest, "commit", "-q", "--allow-empty", "-m", "doom-team: initial baseline")
@@ -241,6 +245,9 @@ class DeliverableRepo:
         dest = _safe_destination(destination)
         if not (dest / ".git").is_dir():
             raise DeliverableError(f"{dest} is not a deliverable repository")
+        # Re-assert the pin: a repository created before this guard existed,
+        # or one whose metadata was tampered with, is hardened on open.
+        _write_workspace_attributes(dest)
         return cls(path=dest)
 
     def head(self) -> str:
