@@ -7,9 +7,32 @@ without depending on any infrastructure or orchestration engine.
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
+
+# THE task-identifier lexical contract, shared by the domain, the planner
+# prompt/validation, and the deliverable workspace layer. The pattern is the
+# deliverable layer's historical workspace-safety rule adopted unchanged as
+# the single source of truth: a task id becomes a workspace directory name
+# and a git branch segment, so the vocabulary must stay filesystem- and
+# ref-safe. A plan accepted anywhere upstream of a workspace must therefore
+# satisfy exactly this rule - two layers carrying separate regexes is how a
+# valid-looking plan dies at its first workspace clone.
+TASK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+
+# Human-readable form of TASK_ID_PATTERN, for prompts and error messages.
+# Keep the two in lockstep; tests pin their agreement.
+TASK_ID_RULE = (
+    "lowercase ASCII letters, digits, '.', '_' or '-' only, starting with a "
+    "lowercase letter or digit, at most 81 characters"
+)
+
+
+def task_id_is_valid(task_id: str) -> bool:
+    """Whether an identifier satisfies the canonical task-id contract."""
+    return bool(TASK_ID_PATTERN.fullmatch(task_id))
 
 
 class AcceptanceState(Enum):
@@ -62,6 +85,10 @@ class TaskContract:
         instr = self.instruction.strip()
         if not id_:
             raise ValueError("Task id must not be empty")
+        if not task_id_is_valid(id_):
+            raise ValueError(
+                f"Task id {id_!r} is invalid: task ids use {TASK_ID_RULE}"
+            )
         if not obj_id:
             raise ValueError("Objective id must not be empty")
         if not instr:
@@ -76,6 +103,11 @@ class TaskContract:
         deps = tuple(d.strip() for d in self.dependencies)
         if any(not d for d in deps):
             raise ValueError("Dependencies must not be empty strings")
+        bad_deps = sorted(d for d in deps if not task_id_is_valid(d))
+        if bad_deps:
+            raise ValueError(
+                f"Dependencies {bad_deps} are invalid: task ids use {TASK_ID_RULE}"
+            )
         if id_ in deps:
             raise ValueError("Task cannot depend on itself")
         if len(set(deps)) != len(deps):

@@ -17,7 +17,13 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from doom_team.domain import Mission, Objective, TaskContract
+from doom_team.domain import (
+    TASK_ID_RULE,
+    Mission,
+    Objective,
+    TaskContract,
+    task_id_is_valid,
+)
 from doom_team.inference import InferenceError
 from doom_team.ports import InferencePort
 from doom_team.routing import (
@@ -46,7 +52,8 @@ PLANNER_SYSTEM_PROFILE = (
     '"dependencies": [str, ...], "required_capabilities": [str, ...], '
     '"acceptance_criteria": [str, ...]}]}. '
     f"Use at most {MAX_PLAN_TASKS} tasks. Task ids must be unique short "
-    "slugs. Dependencies may only reference task ids in the same plan and "
+    f"slugs of {TASK_ID_RULE} - for example 'implement-http', never 'T1' or "
+    "'Task 1'. Dependencies may only reference task ids in the same plan and "
     "must form an acyclic graph. Every task declares at least one concrete, "
     "checkable acceptance criterion.\n\n"
     + capability_contract_text()
@@ -147,6 +154,16 @@ class Planner:
             raise PlanningError(f"tasks[{index}].task_id must be a string")
         if len(task_id) > MAX_IDENTIFIER_CHARS:
             raise PlanningError(f"tasks[{index}].task_id exceeds the length bound")
+        # The workspace layer will refuse any id outside the canonical
+        # contract, so an invalid id must fail the PLAN, not the mission's
+        # first workspace clone. Check the same stripped form TaskContract
+        # will store. Dependencies use the identical vocabulary: a reference
+        # that can never name a valid task can never resolve.
+        if not task_id_is_valid(task_id.strip()):
+            raise PlanningError(
+                f"tasks[{index}].task_id {task_id!r} is not a valid task id; "
+                f"task ids use {TASK_ID_RULE}"
+            )
         if not isinstance(description, str):
             raise PlanningError(f"tasks[{index}].description must be a string")
         if len(description) > self._config.max_description_chars:
@@ -162,6 +179,14 @@ class Planner:
                 raise PlanningError(f"tasks[{index}].{name} must be a list of strings")
         if len(dependencies) > self._config.max_dependencies:
             raise PlanningError(f"tasks[{index}] exceeds the dependency bound")
+        bad_deps = sorted(
+            dep for dep in (d.strip() for d in dependencies) if not task_id_is_valid(dep)
+        )
+        if bad_deps:
+            raise PlanningError(
+                f"tasks[{index}].dependencies {bad_deps} are not valid task "
+                f"ids; task ids use {TASK_ID_RULE}"
+            )
         for name, values, bound in (
             ("dependencies", dependencies, MAX_IDENTIFIER_CHARS),
             ("required_capabilities", capabilities, MAX_IDENTIFIER_CHARS),

@@ -16,9 +16,13 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from doom_team.domain import TASK_ID_PATTERN
 from doom_team.subprocess_guard import run_guarded
 
-_TASK_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+# The canonical contract from doom_team.domain, kept as this module's
+# fail-closed boundary: the planner validates plans against the same rule,
+# but a workspace never trusts that this happened.
+_TASK_ID = TASK_ID_PATTERN
 _BASELINE_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _REVISION_SHA = _BASELINE_SHA
 _GIT_IDENTITY = ("doom-team", "team@doom.local")
