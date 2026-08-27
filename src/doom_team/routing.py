@@ -105,6 +105,73 @@ class RoutingDecision:
         }
 
 
+def _covering_profiles(
+    required: tuple[str, ...], registry: tuple[SpecialistProfile, ...]
+) -> list[SpecialistProfile]:
+    """Specialists that cover the WHOLE requirement set. The one routing rule."""
+    return [profile for profile in registry if profile.covers(required)]
+
+
+def capability_is_routable(
+    required: tuple[str, ...] | list[str],
+    registry: tuple[SpecialistProfile, ...] = SPECIALIST_REGISTRY,
+) -> bool:
+    """True when :func:`route_task` could select a specialist for this set.
+
+    Same three conditions route_task applies, in one place, so a caller that
+    needs to know routability in advance cannot drift from the router.
+    """
+    wanted = tuple(required)
+    if not wanted:
+        return False
+    if set(wanted) - CAPABILITY_VOCABULARY:
+        return False
+    return bool(_covering_profiles(wanted, registry))
+
+
+def routable_capability_sets(
+    registry: tuple[SpecialistProfile, ...] = SPECIALIST_REGISTRY,
+) -> tuple[tuple[str, ...], ...]:
+    """Each specialist's full coverage set, deduplicated and sorted.
+
+    Membership in the vocabulary is not enough: a requirement set must be
+    covered by ONE specialist, so a set spanning two of them cannot be routed
+    and must never be planned. Because coverage is a subset test, a task is
+    routable exactly when its requirements are a non-empty subset of one of
+    these sets.
+    """
+    seen = {tuple(sorted(profile.supported_capabilities)) for profile in registry}
+    return tuple(sorted(seen))
+
+
+def capability_contract_text(
+    registry: tuple[SpecialistProfile, ...] = SPECIALIST_REGISTRY,
+) -> str:
+    """The routing contract, rendered for whoever must plan within it.
+
+    Generated from the live registry and vocabulary, so a planner shown this
+    text is shown exactly what the router will accept - not a copy that can
+    fall out of date.
+    """
+    tokens = ", ".join(sorted(CAPABILITY_VOCABULARY))
+    combos = "\n".join(
+        f"  - {', '.join(combo)}" for combo in routable_capability_sets(registry)
+    )
+    return (
+        f"AVAILABLE CAPABILITIES (use these exact tokens and nothing else): {tokens}.\n"
+        "ROUTING RULE: one specialist executes a whole task, so a task's "
+        "required_capabilities must be a non-empty SUBSET of one of these "
+        "specialist coverage sets:\n"
+        f"{combos}\n"
+        "A task requiring capabilities from two different sets cannot be "
+        "routed; split it into separate tasks instead.\n"
+        "Never invent capability names, synonyms, or variants of these tokens. "
+        "General application programming - command-line handling, HTTP "
+        "serving, parsing, validation, error handling - is backend.python; "
+        "there is no separate capability for it."
+    )
+
+
 def route_task(
     task: TaskContract,
     registry: tuple[SpecialistProfile, ...] = SPECIALIST_REGISTRY,
@@ -120,7 +187,7 @@ def route_task(
         raise RoutingError(
             f"task {task.id} requires unknown capabilities: {unknown}"
         )
-    candidates = [profile for profile in registry if profile.covers(required)]
+    candidates = _covering_profiles(required, registry)
     if not candidates:
         raise RoutingError(
             f"no registered specialist covers all capabilities {sorted(required)} "

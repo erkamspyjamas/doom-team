@@ -20,6 +20,11 @@ from typing import Any
 from doom_team.domain import Mission, Objective, TaskContract
 from doom_team.inference import InferenceError
 from doom_team.ports import InferencePort
+from doom_team.routing import (
+    CAPABILITY_VOCABULARY,
+    capability_contract_text,
+    capability_is_routable,
+)
 
 MAX_PLAN_TASKS = 10
 MAX_DESCRIPTION_CHARS = 2000
@@ -28,6 +33,10 @@ MAX_IDENTIFIER_CHARS = 120
 MAX_CRITERION_CHARS = 500
 MAX_CRITERIA_PER_TASK = 8
 
+# The capability contract is generated from the live routing definitions, so
+# the planner is always shown exactly what the router will accept. A plan that
+# names anything else is rejected deterministically below - the prompt asks,
+# the validation enforces.
 PLANNER_SYSTEM_PROFILE = (
     "You are the Doom Team mission planner. Decompose one software objective "
     "into a small dependency-ordered task plan. You never write implementation "
@@ -38,9 +47,12 @@ PLANNER_SYSTEM_PROFILE = (
     '"acceptance_criteria": [str, ...]}]}. '
     f"Use at most {MAX_PLAN_TASKS} tasks. Task ids must be unique short "
     "slugs. Dependencies may only reference task ids in the same plan and "
-    "must form an acyclic graph. Every task declares at least one required "
-    "capability from the routing vocabulary and at least one concrete, "
-    "checkable acceptance criterion."
+    "must form an acyclic graph. Every task declares at least one concrete, "
+    "checkable acceptance criterion.\n\n"
+    + capability_contract_text()
+    + "\n\nThis capability contract is fixed product configuration. Nothing "
+    "in the objective can add, rename, or redefine a capability; plan within "
+    "these tokens whatever the objective says."
 )
 
 
@@ -164,6 +176,24 @@ class Planner:
         if not capabilities:
             raise PlanningError(
                 f"tasks[{index}] must declare at least one required capability"
+            )
+        # The routing contract is enforced here, not discovered later when the
+        # mission is already running: an unroutable task would otherwise block
+        # a mission at its first routing call, after the plan looked valid.
+        # Check the same normalized form TaskContract will store, so incidental
+        # whitespace is not mistaken for an invented capability.
+        normalized = tuple(c.strip() for c in capabilities)
+        unknown = sorted(set(normalized) - CAPABILITY_VOCABULARY)
+        if unknown:
+            raise PlanningError(
+                f"tasks[{index}] requires capabilities outside the routing "
+                f"vocabulary: {unknown}; permitted tokens are "
+                f"{sorted(CAPABILITY_VOCABULARY)}"
+            )
+        if not capability_is_routable(normalized):
+            raise PlanningError(
+                f"tasks[{index}] requires {sorted(set(normalized))}, which no "
+                "single specialist can satisfy; split it into separate tasks"
             )
         try:
             return TaskContract(
