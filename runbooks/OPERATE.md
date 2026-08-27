@@ -155,7 +155,8 @@ outside it:
 | Evidence records | `<state_dir>/evidence/` |
 | Artifacts | `<state_dir>/artifacts/` |
 | Verdict records | `<state_dir>/verdicts/` |
-| Recovery state | `<state_dir>/recovery.json` |
+| Mission ledger | `<state_dir>/missions/` |
+| Recovery state (dormant; not written by the mission path) | `<state_dir>/recovery.json` |
 | Run-id mapping | `<state_dir>/store.json` |
 | Preserved workspaces | `<state_dir>/preserved/` |
 | Event history | `<state_dir>/events/events.jsonl` |
@@ -170,9 +171,10 @@ The event log is append-only and unbounded by default. Archive or rotate
 
 ## Common Operational Tasks
 
-- **Check the semantic recovery budget**: `doom-team status` shows whether
-  `recovery.json` is present; inspect the file for per-task
-  `semantic_retries_left` and `exhausted`. Exhaustion survives restart.
+- **Check a task's attempt budget**: `doom-team status` reports the configured
+  `semantic_retries` policy. Consumption is per mission: the mission record
+  under `<state_dir>/missions/` carries the pinned `max_attempts_per_task` and
+  one entry per recorded attempt. Exhaustion is durable and survives restart.
 - **Inspect preserved workspaces**: failed/dirty workspaces are moved under
   `<state_dir>/preserved/` for forensic analysis and are never deleted.
 - **Review approvals**: approval records live under `<state_dir>/approvals/`
@@ -186,5 +188,10 @@ The event log is append-only and unbounded by default. Archive or rotate
   precedence in the [Configuration Reference](../docs/CONFIGURATION.md).
 - Corrupt durable state: `doctor` reports a `StateCorruptionError`; restore from
   the most recent verified backup (see [Disaster Recovery](DISASTER_RECOVERY.md)).
-- Provider or Gas City outage: transient runtime failures never consume the
-  semantic budget; see [Recovery](RECOVERY.md).
+- Provider or Gas City outage: these consume attempts like any other failure.
+  Every started task attempt takes one slot from the task's durable attempt
+  budget, including execution, provider, transport, and worker-launch failures.
+  The budget is pinned to the mission when it is created and is not restored by
+  restart or `resume`; when a task exhausts it, the mission blocks with
+  `recovery_exhausted` rather than retrying indefinitely. Gas City never
+  resubmits work beyond that budget.

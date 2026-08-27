@@ -115,6 +115,20 @@ def test_install_runbook_documents_the_installed_runtime() -> None:
     assert "PYTHONPATH" in install, "the runbook must say PYTHONPATH is not required"
 
 
+def test_operate_runbook_does_not_exempt_runtime_failures_from_the_budget() -> None:
+    """Live T6: every started attempt consumes a slot, transport failures included.
+
+    `recovery.py` documents a different, dormant policy in which runtime
+    failures are exempt. That wording was previously copied into the operator
+    runbook, where it described behaviour the mission path does not have.
+    Two semantic markers, not a prose snapshot: the exemption claim must stay
+    out, and the budget must stay named.
+    """
+    operate = (REPO_ROOT / "runbooks" / "OPERATE.md").read_text().lower()
+    assert "never consume" not in operate
+    assert "attempt budget" in operate
+
+
 def test_operate_runbook_documents_the_mission_lifecycle() -> None:
     """run/resume/approve are the product; they must not be source-only knowledge."""
     operate = (REPO_ROOT / "runbooks" / "OPERATE.md").read_text()
