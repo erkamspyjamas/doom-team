@@ -38,6 +38,55 @@ credential is missing. There are no defaults for required values.
 | `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 | `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
+| `task_transport` | no | `DOOM_TASK_TRANSPORT` | Where task attempts execute: `in_process` (default) or `gas_city` |
+| `gas_city_binary` | when `gas_city` | `DOOM_GAS_CITY_BINARY` | Absolute path to the `gc` executable |
+| `gas_city_city` | when `gas_city` | `DOOM_GAS_CITY_CITY` | Absolute path to the Doom Team-owned city (created on first use) |
+| `gas_city_agent` | no | `DOOM_GAS_CITY_AGENT` | Gas City agent that claims work items (default `mayor`) |
+| `gas_city_attempt_timeout` | no | `DOOM_GAS_CITY_ATTEMPT_TIMEOUT` | Per-attempt timeout in seconds (default `900.0`) |
+
+## Task execution transport
+
+`task_transport` selects where a task attempt runs and is never inferred from
+ambient state — a configured Gas City is never silently downgraded to running
+work in this process, and `gc` being installed never implies `gas_city`.
+
+- `in_process` (default): attempts run inside the service process.
+- `gas_city`: each attempt is one real Gas City work item, executed by a
+  separate Doom Team worker process.
+
+Choosing `gas_city` fails closed unless both `gas_city_binary` and
+`gas_city_city` are set, both are absolute paths, and the binary is executable.
+`gas_city_agent` must be a simple name. The city is initialized once,
+non-interactively, if the configured path does not exist; an existing city is
+used as-is. Job artifacts live under `<state_dir>/gas-city-jobs/`.
+
+The `gc` executable may physically live under any directory, including a tools
+directory belonging to another product. Only the path matters: it is operator
+configuration, and pointing at such a binary does not make that other product a
+Doom Team dependency. Doom Team imports no code from it and uses no part of its
+runtime.
+
+### Interpreter requirement
+
+Gas City workers are launched as `sys.executable -m doom_team.worker`, so the
+interpreter running the CLI must have the `doom_team` package installed, and
+each worker re-reads this same configuration from the environment it inherits.
+Workers run from a per-attempt job directory, so importability that depends on
+the current directory — or on a relative `PYTHONPATH` — fails there. `PYTHONPATH`
+is not a Doom Team setting and is not required by a properly installed runtime;
+see [Install](../runbooks/INSTALL.md).
+
+## Provider routing
+
+`provider_order`, `forbidden_providers`, and `allow_fallbacks` are sent to
+OpenRouter as request-body routing preferences, and only when `model_provider`
+is `openrouter`; for any other provider they are omitted so a plain
+OpenAI-compatible endpoint is not sent vocabulary it cannot read.
+
+Doom Team performs no client-side provider failover of its own. Each inference
+is a single request to `<provider_base_url>/v1/chat/completions`; a failure is
+normalized (`timeout`, `overload`, `rejection`, `malformed`) and raised. Any
+fallback between providers is performed by OpenRouter, not by Doom Team.
 
 ## Credentials and secrets
 

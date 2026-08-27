@@ -13,6 +13,88 @@ process. It complements the [Operability Contract](../docs/OPERABILITY.md) and
   flag position) always wins over the `DOOM_STATE_DIR` environment variable;
   the environment variable is used only when no CLI value is supplied.
 
+## The command line
+
+Every command below is the installed `doom-team` console script from the
+runtime virtual environment created in [Install](INSTALL.md):
+
+```bash
+.venv/bin/doom-team <subcommand>
+```
+
+Activating the virtual environment (`. .venv/bin/activate`) puts `doom-team` on
+`PATH` so the prefix can be dropped. Both forms use the same interpreter.
+
+`python -m doom_team.cli` is a development convenience for running from a
+checkout; it is not the operator entrypoint, and it must never be combined with
+a hand-set `PYTHONPATH` to stand in for an installation.
+
+## Mission lifecycle
+
+A mission takes one natural-language objective and a destination repository.
+Doom Team plans it, routes each task to a specialist, executes the tasks, and
+stops at the human approval gate — it never pushes, deploys, or publishes.
+
+```bash
+.venv/bin/doom-team run "<objective>" --destination /path/to/new/repo
+```
+
+`--destination` is required unless `--plan-only` is given. `--plan-only` plans
+and routes the objective without executing any work. On success the command
+prints a JSON object containing the `mission_id` and a status of
+`awaiting_human_approval`.
+
+Resume an interrupted mission from durable state — a killed process, a reboot —
+by its durable identity:
+
+```bash
+.venv/bin/doom-team resume <mission_id>
+```
+
+Record the human decision on a mission that reached the approval gate. The
+mission id implies the action and frontier SHA, so they are not passed
+separately:
+
+```bash
+.venv/bin/doom-team approve --mission-id <mission_id> \
+  --operator <who> --decision approve
+```
+
+`--decision deny` records a refusal. Approval records the decision and nothing
+else: it never pushes, merges, deploys, or creates a remote.
+
+## Gas City task execution
+
+Task attempts run either inside the service process or as real Gas City work
+items. This is an explicit choice, never inferred from whether `gc` happens to
+be installed:
+
+```bash
+export DOOM_TASK_TRANSPORT=gas_city
+export DOOM_GAS_CITY_BINARY=/absolute/path/to/gc
+export DOOM_GAS_CITY_CITY=/absolute/path/to/doom-team-city
+```
+
+See the [Configuration Reference](../docs/CONFIGURATION.md#task-execution-transport)
+for every setting and its default. The city is created on first use if the path
+does not exist; Doom Team owns it and keeps it separate from any other city.
+
+**Interpreter contract.** Each attempt is executed by a separate worker process
+that Doom Team launches as `sys.executable -m doom_team.worker` — the *same*
+interpreter running the CLI. That worker runs with its working directory set to
+a per-attempt job directory, and it re-reads the same `DOOM_*` configuration
+from the environment it inherits. Two consequences:
+
+- The interpreter running `doom-team` must have the package installed. A source
+  checkout that is importable only because of the current directory, or because
+  of a relative `PYTHONPATH`, will fail in the worker with
+  `ModuleNotFoundError: No module named 'doom_team'`.
+- The provider credential and the other `DOOM_*` settings must be present in
+  the environment you start `doom-team` from, because the worker inherits them.
+
+Job artifacts are runtime state and live under `<state_dir>/gas-city-jobs/`,
+never inside the deliverable repository.
+
 ## Start
 
 ```bash
