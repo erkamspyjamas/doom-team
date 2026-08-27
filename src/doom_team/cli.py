@@ -7,7 +7,8 @@ Exit codes:
     1 - configuration error
     2 - state or store error
     3 - approval failure
-    4 - run failure (planning, routing, or unavailable execution runtime)
+    4 - run failure (planning, routing, or a mission that did not reach the
+        human approval gate)
 """
 
 from __future__ import annotations
@@ -24,8 +25,16 @@ from pathlib import Path
 from doom_team.approval import DurableApprovalPort
 from doom_team.backup import backup_state, restore_state
 from doom_team.config import ConfigError, ConfigLoader, Settings
+from doom_team.durable import StateCorruptionError
 from doom_team.evidence import DurableEvidenceStore
 from doom_team.inference import build_inference_client
+from doom_team.mission import (
+    MISSION_ACTION_PREFIX,
+    MissionLedgerError,
+    MissionStore,
+    approve_mission,
+)
+from doom_team.mission_runner import MissionRunError, MissionRunner
 from doom_team.planner import Planner, PlanningError
 from doom_team.routing import RoutingError, route_task
 from doom_team.observability import (
@@ -77,6 +86,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Plan and route the objective without executing any work",
     )
+    run_parser.add_argument(
+        "--destination",
+        default=None,
+        help="Deliverable repository path (required unless --plan-only)",
+    )
 
     serve_parser = subparsers.add_parser(
         "serve", help="Run the service loop with graceful shutdown"
@@ -97,8 +111,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "approve", help="Record a human approval (never deploys)"
     )
     _add_state_dir(approve_parser)
-    approve_parser.add_argument("--action", required=True, help="Approval action")
-    approve_parser.add_argument("--frontier-sha", required=True, help="Frontier SHA")
+    approve_parser.add_argument(
+        "--mission-id",
+        default=None,
+        help="Approve a completed mission by its durable mission identity",
+    )
+    approve_parser.add_argument(
+        "--action", default=None, help="Approval action (implied by --mission-id)"
+    )
+    approve_parser.add_argument(
+        "--frontier-sha", default=None, help="Frontier SHA (implied by --mission-id)"
+    )
     approve_parser.add_argument("--operator", required=True, help="Operator identity")
     approve_parser.add_argument(
         "--decision",
@@ -148,18 +171,21 @@ def _make_event_sink(settings: Settings) -> DurableEventSink:
     return DurableEventSink(settings.state_dir, secret_values=settings.redaction_secrets())
 
 
-def _cmd_run(settings: Settings, objective: str, *, plan_only: bool) -> int:
-    """Plan and route an objective; execution arrives with the full runtime.
+def _cmd_run(
+    settings: Settings, objective: str, *, plan_only: bool, destination: str | None
+) -> int:
+    """Plan an objective, and unless plan-only, execute the whole mission.
 
     Plan-only is deliberately ephemeral: it creates no project repository, no
     workspace, and no durable mission state, and it never executes work.
+
+    Execution runs the canonical :class:`MissionRunner`: plan, automatic
+    routing, serial task execution with real validation, QA and Reviewer,
+    frontier advancement, and a fresh final validation, ending at the human
+    approval gate. It never pushes, deploys, or configures a remote.
     """
     if not plan_only:
-        print(
-            "execution runtime not implemented yet: use --plan-only",
-            file=sys.stderr,
-        )
-        return EXIT_RUN_ERROR
+        return _cmd_run_mission(settings, objective, destination)
     try:
         client = build_inference_client(settings)
     except ConfigError as exc:
@@ -190,6 +216,46 @@ def _cmd_run(settings: Settings, objective: str, *, plan_only: bool) -> int:
         "routing": [decision.as_dict() for decision in decisions],
     }
     print(json.dumps(output, sort_keys=True))
+    return EXIT_SUCCESS
+
+
+def _cmd_run_mission(settings: Settings, objective: str, destination: str | None) -> int:
+    """Execute one complete mission through the canonical orchestrator.
+
+    A destination is mandatory: execution creates a real deliverable
+    repository, so the operator must say where it lives rather than have one
+    appear in the current directory.
+    """
+    if not destination:
+        print(
+            "run: --destination is required to execute a mission "
+            "(use --plan-only to plan without executing)",
+            file=sys.stderr,
+        )
+        return EXIT_RUN_ERROR
+    try:
+        client = build_inference_client(settings)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
+    store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
+    runner = MissionRunner(
+        client,
+        store,
+        workspaces_root=settings.state_dir / "workspaces",
+        event_sink=_make_event_sink(settings),
+    )
+    try:
+        result = runner.run(objective, destination)
+    except MissionRunError as exc:
+        print(f"run: mission could not start: {exc}", file=sys.stderr)
+        return EXIT_RUN_ERROR
+    except (MissionLedgerError, OSError) as exc:
+        print(f"run: mission state error: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    print(json.dumps(result.as_dict(), sort_keys=True))
+    if not result.awaiting_approval:
+        return EXIT_RUN_ERROR
     return EXIT_SUCCESS
 
 
@@ -301,9 +367,42 @@ def _cmd_doctor(settings: Settings) -> int:
 
 
 def _cmd_approve(settings: Settings, args: argparse.Namespace) -> int:
-    """Record a human approval via the durable ApprovalPort. Never deploys."""
+    """Record a human approval via the durable ApprovalPort. Never deploys.
+
+    Two shapes of the same decision: ``--mission-id`` approves a completed
+    mission (the action and the frontier SHA come from its durable record),
+    while the explicit ``--action``/``--frontier-sha`` pair stays available
+    for approvals that are not mission runs.
+    """
     port = DurableApprovalPort(settings.state_dir, event_sink=_make_event_sink(settings))
     decision = args.decision in ("approve", "true")
+    if args.mission_id:
+        if args.action or args.frontier_sha:
+            # These are derived from the mission record; accepting them
+            # silently would let an operator believe they bound the approval
+            # to something they named.
+            print(
+                "approve: --action and --frontier-sha are implied by --mission-id; "
+                "pass one form or the other",
+                file=sys.stderr,
+            )
+            return EXIT_APPROVAL_ERROR
+        return _cmd_approve_mission(settings, args, port, decision)
+    if not args.action or not args.frontier_sha:
+        print(
+            "approve: provide --mission-id, or both --action and --frontier-sha",
+            file=sys.stderr,
+        )
+        return EXIT_APPROVAL_ERROR
+    if args.action.startswith(MISSION_ACTION_PREFIX):
+        # Mission decisions go through the ledger, which enforces the gate and
+        # serializes deciders. Writing that action directly would record an
+        # approval the mission itself never made.
+        print(
+            f"approve: {MISSION_ACTION_PREFIX!r} actions are decided with --mission-id",
+            file=sys.stderr,
+        )
+        return EXIT_APPROVAL_ERROR
     try:
         digest = port.approve(
             args.action,
@@ -317,6 +416,52 @@ def _cmd_approve(settings: Settings, args: argparse.Namespace) -> int:
         print(f"approve: failed: {exc}", file=sys.stderr)
         return EXIT_APPROVAL_ERROR
     print(f"approval recorded: {digest}")
+    return EXIT_SUCCESS
+
+
+def _cmd_approve_mission(
+    settings: Settings,
+    args: argparse.Namespace,
+    port: DurableApprovalPort,
+    decision: bool,
+) -> int:
+    """Decide a completed mission by its durable identity. Never deploys.
+
+    Fails closed unless the mission is actually awaiting approval, so a
+    blocked mission, one whose final validation failed, one still running,
+    and one already decided are all refused.
+    """
+    store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
+    try:
+        record = approve_mission(
+            store,
+            port,
+            args.mission_id,
+            operator=args.operator,
+            decision=decision,
+            contract_revision=args.contract_revision,
+            roadmap_revision=args.roadmap_revision,
+        )
+    except MissionLedgerError as exc:
+        print(f"approve: {exc}", file=sys.stderr)
+        return EXIT_APPROVAL_ERROR
+    except StateCorruptionError as exc:
+        print(f"approve: mission state unreadable: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    except (ValueError, OSError) as exc:
+        print(f"approve: failed: {exc}", file=sys.stderr)
+        return EXIT_APPROVAL_ERROR
+    print(
+        json.dumps(
+            {
+                "mission_id": record.mission_id,
+                "status": record.status,
+                "frontier_sha": record.final_frontier_sha,
+                "approval": record.approval,
+            },
+            sort_keys=True,
+        )
+    )
     return EXIT_SUCCESS
 
 
@@ -363,7 +508,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CONFIG_ERROR
 
     if args.command == "run":
-        return _cmd_run(settings, args.objective, plan_only=args.plan_only)
+        return _cmd_run(
+            settings,
+            args.objective,
+            plan_only=args.plan_only,
+            destination=args.destination,
+        )
     if args.command == "serve":
         return _cmd_serve(settings)
     if args.command == "status":
