@@ -66,6 +66,13 @@ from doom_team.planner import Planner, PlanningError
 from doom_team.ports import InferencePort
 from doom_team.routing import RoutingDecision, RoutingError, route_task, specialist_by_id
 from doom_team.task_runner import STATUS_ACCEPTED, ProductionTaskRunner, TaskRunnerError
+from doom_team.transport import (
+    InProcessTaskTransport,
+    TaskAttemptRequest,
+    TaskExecutionTransport,
+    TransportError,
+    transport_failure,
+)
 from doom_team.validation import (
     ValidationCommand,
     ValidationExecutionError,
@@ -169,6 +176,8 @@ class MissionRunner:
         final_validation_commands: tuple[ValidationCommand, ...] | None = None,
         event_sink: EventSink | None = None,
         semantic_retries: int = DEFAULT_SEMANTIC_RETRIES,
+        transport: TaskExecutionTransport | None = None,
+        validation_policy: str = "default",
     ) -> None:
         if not validation_commands:
             raise MissionRunError("a mission requires at least one validation command")
@@ -189,6 +198,13 @@ class MissionRunner:
         self._task_runner = ProductionTaskRunner(
             inference, validation_commands=self._validation_commands
         )
+        # Where a task attempt executes is a transport concern; everything the
+        # mission decides is unchanged either way. The default keeps the
+        # Gate-A behaviour exactly, with no external dependency.
+        self._transport: TaskExecutionTransport = (
+            transport if transport is not None else InProcessTaskTransport(self._task_runner)
+        )
+        self._validation_policy = validation_policy
 
     def _emit(self, kind: str, details: dict[str, Any]) -> None:
         if self._event_sink is not None:
@@ -546,17 +562,40 @@ class MissionRunner:
             },
         )
         try:
-            result = self._task_runner.run_task(
-                task,
-                decision,
-                specialist,
-                workspace,
+            request = TaskAttemptRequest(
+                mission_id=mission_id,
+                task_id=task.id,
+                attempt=attempt_number,
+                baseline_sha=frontier,
+                workspace_dir=workspace.path.name,
+                branch=workspace.branch,
+                workspaces_root=str(self._workspaces_root),
+                task=task,
+                decision=decision,
+                validation_policy=self._validation_policy,
                 objective_summary=self._objective_summary(mission_id),
                 dependency_summary=self._dependency_summary(accepted),
                 remediation_summary=remediation,
             )
+        except TransportError as exc:
+            return self._blocked(mission_id, "task_request_invalid", str(exc), task.id)
+        try:
+            result = self._transport.execute(request)
         except TaskRunnerError as exc:
             return self._blocked(mission_id, "task_runner_error", str(exc), task.id)
+        except TransportError as exc:
+            # A transport that cannot deliver a trustworthy result yields a
+            # failed ATTEMPT, counted by the same bounded budget as any other.
+            result = transport_failure(request, str(exc))
+        if result.task_id != task.id or result.baseline_sha != frontier:
+            return self._blocked(
+                mission_id,
+                "result_identity_mismatch",
+                f"result {result.task_id}@{result.baseline_sha} is not this attempt "
+                f"{task.id}@{frontier}",
+                task.id,
+            )
+        del specialist
 
         self._store.record_task_result(mission_id, result)
         self._emit(

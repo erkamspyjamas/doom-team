@@ -44,9 +44,30 @@ class DeliverableError(Exception):
     """Raised when a deliverable repository operation is unsafe or invalid."""
 
 
+# Git reads several config keys as COMMANDS to execute. Validation runs
+# model-authored code beside the workspace with no filesystem sandbox, so
+# `.git/config` there must be assumed hostile: a planted `core.fsmonitor`
+# would run on the next `git status`, inside this process. Passing these on
+# the command line overrides whatever the file says, on every invocation, so
+# rewriting the file later buys nothing.
+_GIT_HARDENING: tuple[str, ...] = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.pager=cat",
+    "-c", "protocol.ext.allow=never",
+)
+# An empty `diff.external` would itself be run as a command, so the external
+# differ is disabled with the flag git provides for it instead.
+_NO_EXTERNAL_DIFF = ("--no-ext-diff",)
+
+
 def _git(path: Path, *args: str) -> str:
     completed = run_guarded(
-        ["git", *args], cwd=str(path), check=False, text=True, capture_output=True
+        ["git", *_GIT_HARDENING, *args],
+        cwd=str(path),
+        check=False,
+        text=True,
+        capture_output=True,
     )
     if completed.returncode != 0:
         raise DeliverableError(
@@ -137,7 +158,8 @@ class TaskWorkspace:
         into an unusable rendering.
         """
         output = _git(
-            self.path, "diff", "--name-only", "-z", f"{self.baseline_sha}..{revision}"
+            self.path, "diff", *_NO_EXTERNAL_DIFF, "--name-only", "-z",
+            f"{self.baseline_sha}..{revision}",
         )
         return tuple(name for name in output.split("\0") if name)
 
@@ -154,7 +176,9 @@ class TaskWorkspace:
         in-tree ``.gitattributes``, so committed content can never suppress
         or rewrite its own rendering here.
         """
-        return _git(self.path, "diff", f"{self.baseline_sha}..{revision}")
+        return _git(
+            self.path, "diff", *_NO_EXTERNAL_DIFF, f"{self.baseline_sha}..{revision}"
+        )
 
     def export_revision(self, destination: str | Path, revision: str) -> Path:
         """Materialize a revision into a fresh, disposable repository copy.
@@ -238,7 +262,7 @@ class DeliverableRepo:
         # answer, not an error. Ask before comparing, so "unknown object" and
         # "genuinely broken repository" stay distinguishable.
         present = run_guarded(
-            ["git", "cat-file", "-e", f"{candidate}^{{commit}}"],
+            ["git", *_GIT_HARDENING, "cat-file", "-e", f"{candidate}^{{commit}}"],
             cwd=str(self.path),
             check=False,
             text=True,
@@ -247,7 +271,7 @@ class DeliverableRepo:
         if present.returncode != 0:
             return False
         completed = run_guarded(
-            ["git", "merge-base", "--is-ancestor", candidate, "HEAD"],
+            ["git", *_GIT_HARDENING, "merge-base", "--is-ancestor", candidate, "HEAD"],
             cwd=str(self.path),
             check=False,
             text=True,
