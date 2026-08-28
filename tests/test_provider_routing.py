@@ -530,3 +530,89 @@ def test_base_url_query_or_fragment_rejected(
             **_base_kwargs(tmp_path),
             **(_fallback_kwargs() | {"fallback_base_url": bad}),
         )
+
+
+# --- NVIDIA reasoning effort: one configurable axis, fail closed ------------
+
+
+def _routed_client_with(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, **kw: Any):
+    monkeypatch.setenv("DOOM_API_KEY", "primary-secret")
+    monkeypatch.setenv("FALLBACK_TEST_API_KEY", "fallback-secret")
+    settings = ConfigLoader().load(**_base_kwargs(tmp_path), **_fallback_kwargs(), **kw)
+    client = build_inference_client(settings)
+    assert isinstance(client, RoutedInferenceClient)
+    return client
+
+
+@pytest.mark.parametrize("configured,expected", [
+    (None, "max"),        # R1: default preserves rc1 behavior
+    ("max", "max"),       # R2
+    ("high", "high"),     # R3
+    ("none", "none"),     # R4
+])
+def test_reasoning_effort_reaches_the_nvidia_route(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+    configured: str | None, expected: str,
+) -> None:
+    kw = {} if configured is None else {"nvidia_reasoning_effort": configured}
+    client = _routed_client_with(tmp_path, monkeypatch, **kw)
+    assert client._primary._extra_body["reasoning_effort"] == expected
+    # R7: everything else in the profile is untouched by the knob.
+    rest = {k: v for k, v in client._primary._extra_body.items() if k != "reasoning_effort"}
+    baseline = {k: v for k, v in NVIDIA_REQUEST_PROFILE.items() if k != "reasoning_effort"}
+    assert rest == baseline
+    # R6: the OpenRouter fallback never carries the NVIDIA reasoning field.
+    assert "reasoning_effort" not in client._fallback._extra_body
+
+
+@pytest.mark.parametrize("bad", ["MAX", "High", "off", "false", "disabled", "medium", ""])
+def test_invalid_reasoning_effort_fails_closed(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    # R5/R11: rejected before any client exists, naming the vocabulary,
+    # never echoing a credential.
+    monkeypatch.setenv("DOOM_API_KEY", "primary-secret")
+    with pytest.raises(ConfigError) as excinfo:
+        ConfigLoader().load(**_base_kwargs(tmp_path), nvidia_reasoning_effort=bad)
+    message = str(excinfo.value)
+    assert "max, high, none" in message
+    assert "primary-secret" not in message
+
+
+def test_reasoning_effort_resolves_from_environment(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # R9
+    monkeypatch.setenv("DOOM_API_KEY", "primary-secret")
+    monkeypatch.setenv("DOOM_NVIDIA_REASONING_EFFORT", "high")
+    settings = ConfigLoader().load(**_base_kwargs(tmp_path))
+    assert settings.nvidia_reasoning_effort == "high"
+
+
+def test_reasoning_effort_resolves_from_config_file(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # R10
+    import json as _json
+
+    monkeypatch.setenv("DOOM_API_KEY", "primary-secret")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(_json.dumps({"nvidia_reasoning_effort": "none"}))
+    settings = ConfigLoader().load(**_base_kwargs(tmp_path), config_file=cfg)
+    assert settings.nvidia_reasoning_effort == "none"
+
+
+def test_reasoning_effort_in_wire_request_body(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # R8: the configured value is what actually goes over the wire, and the
+    # fallback body still carries no reasoning field.
+    client = _routed_client_with(tmp_path, monkeypatch, nvidia_reasoning_effort="high")
+    nvidia = RouteRecorder("timeout", NVIDIA_MODEL)
+    flash = RouteRecorder("success", FLASH_MODEL, provider="DeepInfra")
+    client._primary._urlopen = nvidia  # type: ignore[attr-defined]
+    client._fallback._urlopen = flash  # type: ignore[attr-defined]
+    client.complete(MESSAGES)
+    assert nvidia.body()["reasoning_effort"] == "high"
+    assert nvidia.body()["seed"] == 42 and nvidia.body()["stream"] is False
+    assert "reasoning_effort" not in flash.body()

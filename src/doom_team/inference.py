@@ -390,7 +390,13 @@ def _route_extras(provider: str, settings: Settings) -> tuple[
             None,
         )
     if name == "nvidia":
-        return None, dict(NVIDIA_REQUEST_PROFILE)
+        # The canonical profile with exactly ONE configurable axis: the
+        # operator-selected reasoning effort. Every other field is pinned so
+        # profile comparisons vary a single variable.
+        return None, dict(
+            NVIDIA_REQUEST_PROFILE,
+            reasoning_effort=settings.nvidia_reasoning_effort,
+        )
     return None, None
 
 

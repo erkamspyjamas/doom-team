@@ -38,6 +38,7 @@ credential is missing. There are no defaults for required values.
 | `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 | `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
+| `nvidia_reasoning_effort` | no | `DOOM_NVIDIA_REASONING_EFFORT` | Reasoning effort for the NVIDIA route's request profile: `max` (default), `high`, or `none`; exact lowercase vocabulary, invalid values fail closed |
 | `fallback_provider` | with fallback | `DOOM_FALLBACK_PROVIDER` | Provider name of the single fallback inference route (e.g. `openrouter`) |
 | `fallback_model_name` | with fallback | `DOOM_FALLBACK_MODEL_NAME` | Model served by the fallback route |
 | `fallback_base_url` | with fallback | `DOOM_FALLBACK_BASE_URL` | Fallback route base URL, same rules as `provider_base_url` |
@@ -85,8 +86,12 @@ see [Install](../runbooks/INSTALL.md).
 Request options are route-specific. `provider_order`, `forbidden_providers`,
 and `allow_fallbacks` are sent as request-body routing preferences only to an
 `openrouter` route; an `nvidia` route instead carries the canonical NVIDIA
-request profile (`reasoning_effort=max`, `temperature=1.0`, `top_p=0.95`,
-`max_tokens=16384`, `seed=42`, `stream=false`). No route is ever sent another
+request profile (`temperature=1.0`, `top_p=0.95`, `max_tokens=16384`,
+`seed=42`, `stream=false`, plus `reasoning_effort` from
+`nvidia_reasoning_effort` — `max` by default, the rc1 historical profile;
+`high` and `none` are supported operational profiles whose relative merits
+are measured, not assumed). The setting applies only to `nvidia` routes;
+an OpenRouter route — including the Flash fallback — never carries it. No route is ever sent another
 route's vocabulary. Requests go to `<base_url>/v1/chat/completions`; a base
 URL already ending in `/v1` is used as-is, never doubled.
 

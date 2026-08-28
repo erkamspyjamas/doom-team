@@ -32,6 +32,12 @@ TASK_TRANSPORTS = frozenset({TRANSPORT_IN_PROCESS, TRANSPORT_GAS_CITY})
 
 _SAFE_AGENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$")
 
+# Reasoning effort for the NVIDIA primary route's request profile. Exact,
+# case-sensitive vocabulary - an unrecognized value fails closed rather than
+# silently becoming another profile. "max" is the rc1 historical behavior.
+NVIDIA_REASONING_EFFORTS = ("max", "high", "none")
+DEFAULT_NVIDIA_REASONING_EFFORT = "max"
+
 
 def _env_name(setting: str) -> str:
     return f"DOOM_{setting.upper()}"
@@ -76,6 +82,10 @@ class Settings:
     provider_base_url: str | None = None
     # Where task attempts execute. Trusted operator configuration: a task
     # attempt can name WHICH policy applies, never where or what runs.
+    # NVIDIA-route reasoning effort (max | high | none). Applies ONLY to the
+    # request profile of a route whose provider is nvidia; OpenRouter and any
+    # other provider never see it. Default preserves rc1 behavior exactly.
+    nvidia_reasoning_effort: str = DEFAULT_NVIDIA_REASONING_EFFORT
     # Optional single fallback inference route (provider availability only).
     # Configured as a unit: naming any fallback field requires all of them,
     # with its own independent credential. Empty means no Doom Team fallback.
@@ -125,6 +135,7 @@ class Settings:
             f"allow_fallbacks={self.allow_fallbacks} "
             f"request_timeout={self.request_timeout} "
             f"provider_base_url={self.provider_base_url} "
+            f"nvidia_reasoning_effort={self.nvidia_reasoning_effort} "
             f"fallback_provider={self.fallback_provider} "
             f"fallback_model_name={self.fallback_model_name} "
             f"fallback_base_url={self.fallback_base_url} "
@@ -150,6 +161,7 @@ class Settings:
             "gas_city_city": self.gas_city_city,
             "gas_city_agent": self.gas_city_agent,
             "provider_base_url": self.provider_base_url,
+            "nvidia_reasoning_effort": self.nvidia_reasoning_effort,
             "fallback_provider": self.fallback_provider,
             "fallback_model_name": self.fallback_model_name,
             "fallback_base_url": self.fallback_base_url,
@@ -188,6 +200,7 @@ class ConfigLoader:
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
         provider_base_url: str | None = None,
+        nvidia_reasoning_effort: str | None = None,
         fallback_provider: str | None = None,
         fallback_model_name: str | None = None,
         fallback_base_url: str | None = None,
@@ -380,6 +393,27 @@ class ConfigLoader:
             if not _SAFE_AGENT.fullmatch(gc_agent):
                 raise ConfigError(f"gas_city_agent must be a simple name: {gc_agent!r}")
 
+        effort_raw: Any = nvidia_reasoning_effort
+        if effort_raw is None:
+            # An empty environment variable is "unset" (env_value returns
+            # None for it); an EXPLICITLY configured empty string is not -
+            # it falls through to validation and fails closed like any other
+            # out-of-vocabulary value, never silently becoming the default.
+            effort_raw = env_value("nvidia_reasoning_effort")
+        if effort_raw is None:
+            effort_raw = file_values.get("nvidia_reasoning_effort")
+        if effort_raw is None:
+            effort_raw = DEFAULT_NVIDIA_REASONING_EFFORT
+        effort = str(effort_raw)
+        if effort not in NVIDIA_REASONING_EFFORTS:
+            # Exact vocabulary, no normalization: "High" or "off" silently
+            # becoming another profile would invalidate any profile
+            # comparison the operator believes they are running.
+            raise ConfigError(
+                f"nvidia_reasoning_effort must be one of "
+                f"{', '.join(NVIDIA_REASONING_EFFORTS)}: got {effort!r}"
+            )
+
         fb_provider = str(
             fallback_provider
             or env_value("fallback_provider")
@@ -460,6 +494,7 @@ class ConfigLoader:
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
             provider_base_url=base_url_value,
+            nvidia_reasoning_effort=effort,
             fallback_provider=fb_provider,
             fallback_model_name=fb_model,
             fallback_base_url=fb_base_url,
