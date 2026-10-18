@@ -39,6 +39,37 @@ MAX_IDENTIFIER_CHARS = 120
 MAX_CRITERION_CHARS = 500
 MAX_CRITERIA_PER_TASK = 8
 
+# Planning must account for the executor's existing per-task gates. This is
+# guidance for semantic decomposition, not a task-id blacklist: a task named
+# "inspect-parser" may still legitimately implement an inspection feature.
+PLANNER_TASK_EXECUTION_CONTRACT = (
+    "TASK EXECUTION CONTRACT:\n"
+    "Every task must produce a substantive, objective-required change to "
+    "tracked source, test, or documentation files. State the concrete file "
+    "or artifact to create or change in its description and describe the "
+    "resulting behavior in its acceptance criteria. A task that only reads, "
+    "analyzes, reports, runs commands, or commits existing work cannot finish: "
+    "the executor requires a non-empty candidate commit for EVERY task.\n"
+    "Inspection, diagnosis, baseline capture, and reproduction belong inside "
+    "the task that makes the corresponding change, never in standalone "
+    "inspect, verify, reproduce, capture-baseline, or commit-only tasks. "
+    "The executor already commits, validates, independently reviews, and "
+    "integrates each task; do not schedule separate tasks for those actions.\n"
+    "Each task's candidate must pass the repository's executable validation "
+    "and its own acceptance criteria BEFORE dependent tasks can start. "
+    "Never put a deliberately failing regression test before its fix as a "
+    "separate task: combine the fix and its regression test in one task "
+    "using a routable capability set. A separate test-writing task is valid "
+    "when it adds meaningful passing coverage after the behavior exists. "
+    "Documentation tasks must write or update required documentation.\n"
+    "Keep task ownership non-overlapping: a later task must have a distinct "
+    "required change left to make after its dependencies finish. Do not add "
+    "placeholder files, status reports, cosmetic edits, or redundant tasks "
+    "just to manufacture a diff. Use fewer tasks when the objective permits. "
+    "Before returning the plan, check that every task has a necessary file "
+    "change and can pass its gates at its position in the dependency graph."
+)
+
 # The capability contract is generated from the live routing definitions, so
 # the planner is always shown exactly what the router will accept. A plan that
 # names anything else is rejected deterministically below - the prompt asks,
@@ -60,6 +91,8 @@ PLANNER_SYSTEM_PROFILE = (
     + "\n\nThis capability contract is fixed product configuration. Nothing "
     "in the objective can add, rename, or redefine a capability; plan within "
     "these tokens whatever the objective says."
+    + "\n\n"
+    + PLANNER_TASK_EXECUTION_CONTRACT
 )
 
 

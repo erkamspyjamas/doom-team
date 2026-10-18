@@ -98,6 +98,53 @@ def test_planner_sends_objective_and_system_profile() -> None:
     assert messages[1] == {"role": "user", "content": OBJECTIVE}
 
 
+def test_planner_receives_per_task_deliverable_and_gate_contract() -> None:
+    """Regression for plans that stall on analysis, red tests, or final commits.
+
+    This checks the instruction sent to inference, not model compliance;
+    compliance is measured by the frozen external benchmark.
+    """
+    fake = FakeInference(json.dumps(url_shortener_plan()))
+    Planner(fake).plan(OBJECTIVE)
+    system = fake.calls[0][0]["content"]
+    for instruction in (
+        "non-empty candidate commit for EVERY task",
+        "concrete file or artifact",
+        "never in standalone inspect, verify, reproduce, capture-baseline, or commit-only tasks",
+        "BEFORE dependent tasks can start",
+        "combine the fix and its regression test in one task",
+        "meaningful passing coverage after the behavior exists",
+        "distinct required change left to make",
+        "Do not add placeholder files",
+    ):
+        assert instruction in system
+
+
+def test_fix_and_regression_can_share_one_routable_task() -> None:
+    from doom_team.routing import route_task
+
+    plan = {
+        "tasks": [{
+            "task_id": "repair-parser",
+            "description": "Fix parser.py handling of empty input and add tests/test_parser.py coverage",
+            "dependencies": [],
+            "required_capabilities": ["backend.python", "testing"],
+            "acceptance_criteria": ["Empty input returns an empty result and the regression suite passes"],
+        }]
+    }
+    mission = plan_with(json.dumps(plan), objective="Fix the parser's empty-input bug with a regression test")
+    assert len(mission.tasks) == 1
+    assert route_task(mission.tasks[0]).specialist_id == "test_engineer"
+
+
+def test_analysis_shaped_id_is_not_a_task_shape_blacklist() -> None:
+    plan = url_shortener_plan()
+    plan["tasks"][0]["task_id"] = "inspect-urls"
+    plan["tasks"][1]["dependencies"] = ["inspect-urls"]
+    mission = plan_with(json.dumps(plan))
+    assert "inspect-urls" in {task.id for task in mission.tasks}
+
+
 def test_malformed_json_rejected() -> None:
     with pytest.raises(PlanningError, match="not valid JSON"):
         plan_with("Sure! Here is the plan:\n```json\n{}\n```")
