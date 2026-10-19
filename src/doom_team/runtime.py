@@ -96,7 +96,7 @@ def build_task_execution_transport(
     settings: Settings,
     inference: InferencePort,
     *,
-    validation_policy: str = "default",
+    validation_policy: str | None = None,
     event_sink: EventSink | None = None,
 ) -> TaskExecutionTransport:
     """Build the configured transport. Never silently substitutes another.
@@ -106,10 +106,12 @@ def build_task_execution_transport(
     out-of-process execution must not get in-process execution without being
     told.
     """
+    policy = settings.validation_policy if validation_policy is None else validation_policy
+    commands = resolve_validation_policy(policy, typecheck_target=settings.python_typecheck_target)
     if settings.task_transport == TRANSPORT_IN_PROCESS:
         return InProcessTaskTransport(
             ProductionTaskRunner(
-                inference, validation_commands=resolve_validation_policy(validation_policy),
+                inference, validation_commands=commands,
                 validation_timeout=settings.validation_command_timeout,
                 quality_inference=build_quality_inference_client(
                     settings, event_sink=event_sink, producer_run="quality"

@@ -421,6 +421,7 @@ class MissionRecord:
     # Which transport executed this mission's attempts. Recorded so a later
     # resume cannot quietly run the rest of the work somewhere else.
     task_transport: str = ""
+    validation_fingerprint: str = ""
     tasks: tuple[MissionTaskRecord, ...] = ()
     routing: tuple[dict[str, Any], ...] = ()
     final_validation: tuple[dict[str, Any], ...] | None = None
@@ -450,7 +451,7 @@ class MissionRecord:
         return self.status == MISSION_AWAITING_HUMAN_APPROVAL
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "mission_id": self.mission_id,
             "objective": self.objective,
@@ -475,6 +476,10 @@ class MissionRecord:
             "blocker": dict(self.blocker) if self.blocker is not None else None,
             "approval": dict(self.approval) if self.approval is not None else None,
         }
+        if self.validation_fingerprint:
+            payload["validation_fingerprint"] = self.validation_fingerprint
+        return payload
+
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MissionRecord":
@@ -506,6 +511,7 @@ class MissionRecord:
             # never hand an old blocked mission a new attempt.
             quality_reserve_per_task=int(data.get("quality_reserve_per_task") or 0),
             task_transport=str(data.get("task_transport", "")),
+            validation_fingerprint=str(data.get("validation_fingerprint", "")),
             tasks=tuple(MissionTaskRecord.from_dict(t) for t in data.get("tasks", ())),
             routing=tuple(dict(item) for item in data.get("routing", ())),
             final_validation=(
@@ -611,6 +617,7 @@ class MissionStore:
         max_attempts_per_task: int = DEFAULT_MAX_ATTEMPTS_PER_TASK,
         quality_reserve_per_task: int = DEFAULT_QUALITY_RESERVE_PER_TASK,
         task_transport: str = "",
+        validation_fingerprint: str = "",
     ) -> MissionRecord:
         """Create a brand-new mission record; never overwrites an existing one."""
         if self.exists(mission_id):
@@ -637,6 +644,7 @@ class MissionStore:
                 max_attempts_per_task=max_attempts_per_task,
                 quality_reserve_per_task=quality_reserve_per_task,
                 task_transport=task_transport,
+                validation_fingerprint=validation_fingerprint,
             )
         )
 

@@ -41,6 +41,17 @@ DEFAULT_NVIDIA_REASONING_EFFORT = "max"
 OPENROUTER_REASONING_EFFORTS = ("low", "high", "max")
 
 
+def validate_python_typecheck_target(value: str) -> str:
+    """One confined relative source path, never command-line options or shell text."""
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_./-]{0,239}|\.)", value)
+        or ".." in value.split("/")
+    ):
+        raise ConfigError("python_typecheck_target must be a safe relative source path")
+    return value
+
+
 def _env_name(setting: str) -> str:
     return f"DOOM_{setting.upper()}"
 
@@ -82,6 +93,8 @@ class Settings:
     allow_fallbacks: bool = True
     request_timeout: float = 60.0
     validation_command_timeout: float = 300.0
+    validation_policy: str = "default"
+    python_typecheck_target: str = "."
     provider_base_url: str | None = None
     # Where task attempts execute. Trusted operator configuration: a task
     # attempt can name WHICH policy applies, never where or what runs.
@@ -146,6 +159,8 @@ class Settings:
             f"allow_fallbacks={self.allow_fallbacks} "
             f"request_timeout={self.request_timeout} "
             f"validation_command_timeout={self.validation_command_timeout} "
+            f"validation_policy={self.validation_policy} "
+            f"python_typecheck_target={self.python_typecheck_target} "
             f"provider_base_url={self.provider_base_url} "
             f"nvidia_reasoning_effort={self.nvidia_reasoning_effort} "
             f"openrouter_reasoning_effort={self.openrouter_reasoning_effort} "
@@ -176,6 +191,8 @@ class Settings:
             "allow_fallbacks": self.allow_fallbacks,
             "request_timeout": self.request_timeout,
             "validation_command_timeout": self.validation_command_timeout,
+            "validation_policy": self.validation_policy,
+            "python_typecheck_target": self.python_typecheck_target,
             "task_transport": self.task_transport,
             "gas_city_city": self.gas_city_city,
             "gas_city_agent": self.gas_city_agent,
@@ -226,6 +243,8 @@ class ConfigLoader:
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
         validation_command_timeout: float | None = None,
+        validation_policy: str | None = None,
+        python_typecheck_target: str | None = None,
         provider_base_url: str | None = None,
         nvidia_reasoning_effort: str | None = None,
         openrouter_reasoning_effort: str | None = None,
@@ -351,6 +370,16 @@ class ConfigLoader:
             raise ConfigError("validation_command_timeout must be finite and in (0, 3600]") from exc
         if not math.isfinite(validation_timeout) or not 0 < validation_timeout <= 3600:
             raise ConfigError("validation_command_timeout must be finite and in (0, 3600]")
+
+        policy = validation_policy
+        if policy is None:
+            policy = env_value("validation_policy") or file_values.get("validation_policy", "default")
+        if policy not in ("default", "python-quality"):
+            raise ConfigError("validation_policy must be default or python-quality")
+        target = python_typecheck_target
+        if target is None:
+            target = env_value("python_typecheck_target") or file_values.get("python_typecheck_target", ".")
+        target = validate_python_typecheck_target(target)
 
         def validated_base_url(raw: Any, label: str) -> str | None:
             if raw is None:
@@ -597,6 +626,8 @@ class ConfigLoader:
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
             validation_command_timeout=validation_timeout,
+            validation_policy=policy,
+            python_typecheck_target=target,
             provider_base_url=base_url_value,
             nvidia_reasoning_effort=effort,
             openrouter_reasoning_effort=router_effort,

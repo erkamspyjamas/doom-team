@@ -146,3 +146,37 @@ inform the next bounded retry. New files remain permitted. This selection is
 a deterministic heuristic, not semantic repository search: a task whose files
 cannot fit the bounds must be narrowed rather than reconstructed from guesses.
 QA, Reviewer, validation, model profiles and human approval gates are unchanged.
+
+
+## Optional Python quality validation profile
+
+The trusted default remains compileall plus pytest. To require lint and strict
+source typing before **each task's** QA/Reviewer and again on the fresh final
+candidate, configure the operator environment before starting the mission:
+
+```bash
+export PATH="/absolute/path/to/quality-tools/bin:$PATH"
+export DOOM_VALIDATION_POLICY=python-quality
+export DOOM_PYTHON_TYPECHECK_TARGET=pocketledger
+```
+
+`python-quality` executes the existing compile/pytest checks, then
+`ruff check --isolated --select E4,E7,E9,F .` and
+`mypy --strict --no-incremental pocketledger` for this example target. Every
+command's real exit code, stdout/stderr and label reach both reviewers and the
+durable task/final-validation evidence. No command or success assertion comes
+from generated code. A failing quality gate prevents review/advancement.
+
+Ruff and mypy must already be executable on the operator PATH; their absolute
+paths are resolved before planning. Missing tools or an unknown policy fail
+closed. The target is one relative source file/directory (`.` by default),
+not command arguments: absolute paths, parent traversal, options and shell
+text are refused. Config file keys and explicit ConfigLoader overrides use
+`validation_policy` and `python_typecheck_target` with normal precedence.
+
+The chosen quality commands/target are fingerprinted in worker requests and
+new mission records. A worker refuses a changed target/policy; resume refuses
+an upgrade/downgrade or changed quality configuration. Start a new mission for
+such a policy change, preserving old attempts. Existing default-policy
+missions and their serialization remain compatible. This profile is optional
+and does not change historical benchmark validation or approval requirements.

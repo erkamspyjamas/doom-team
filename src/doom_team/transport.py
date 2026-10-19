@@ -23,11 +23,15 @@ attempt and hands back what happened.
 from __future__ import annotations
 
 import re
+import hashlib
+import json
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from doom_team.config import ConfigError, validate_python_typecheck_target
 from doom_team.deliverable import TaskWorkspace
 from doom_team.domain import TaskContract
 from doom_team.routing import RoutingDecision, SpecialistProfile, specialist_by_id
@@ -74,12 +78,36 @@ class TransportError(Exception):
     """Raised when a transport cannot deliver a trustworthy result."""
 
 
-def resolve_validation_policy(name: str) -> tuple[ValidationCommand, ...]:
-    """Resolve a named validation plan from trusted configuration."""
+def resolve_validation_policy(
+    name: str, *, typecheck_target: str = "."
+) -> tuple[ValidationCommand, ...]:
+    """Resolve trusted commands, pinning quality tools before any model call."""
+    if name == "python-quality":
+        try:
+            target = validate_python_typecheck_target(typecheck_target)
+        except ConfigError as exc:
+            raise TransportError(str(exc)) from exc
+        tools = {tool: shutil.which(tool) for tool in ("ruff", "mypy")}
+        if not all(tools.values()):
+            raise TransportError("python-quality requires executable ruff and mypy on the operator PATH")
+        return (*VALIDATION_POLICIES["default"],
+            ValidationCommand(label="ruff", argv=(
+                str(Path(str(tools["ruff"])).absolute()), "check", "--isolated", "--select", "E4,E7,E9,F", ".",
+            )),
+            ValidationCommand(label="mypy", argv=(
+                str(Path(str(tools["mypy"])).absolute()), "--strict", "--no-incremental", target,
+            )),
+        )
     try:
         return VALIDATION_POLICIES[name]
     except KeyError:
         raise TransportError(f"unknown validation policy: {name!r}") from None
+
+
+def validation_fingerprint(policy: str, commands: tuple[ValidationCommand, ...]) -> str:
+    """Bind quality requests to the exact trusted commands and source target."""
+    payload = {"policy": policy, "commands": [(c.label, c.argv) for c in commands]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _clip(text: str) -> str:
@@ -100,6 +128,7 @@ class TaskAttemptRequest:
     task: TaskContract
     decision: RoutingDecision
     validation_policy: str = "default"
+    validation_fingerprint: str = ""
     # Minted per attempt by the transport and echoed back in the result. It
     # does not make a worker trustworthy - the worker is our own code - but it
     # binds a result to THIS request, so a file that merely appears in the job
@@ -151,7 +180,7 @@ class TaskAttemptRequest:
         return specialist_by_id(self.decision.specialist_id)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": 1,
             "mission_id": self.mission_id,
             "task_id": self.task_id,
@@ -175,6 +204,9 @@ class TaskAttemptRequest:
             "dependency_summary": _clip(self.dependency_summary),
             "remediation_summary": _clip(self.remediation_summary),
         }
+        if self.validation_fingerprint:
+            payload["validation_fingerprint"] = self.validation_fingerprint
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskAttemptRequest":
@@ -212,6 +244,7 @@ class TaskAttemptRequest:
                 task=task,
                 decision=decision,
                 validation_policy=str(data.get("validation_policy", "default")),
+                validation_fingerprint=str(data.get("validation_fingerprint", "")),
                 nonce=str(data.get("nonce", "")),
                 objective_summary=str(data.get("objective_summary", "")),
                 dependency_summary=str(data.get("dependency_summary", "")),

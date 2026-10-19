@@ -73,6 +73,7 @@ from doom_team.transport import (
     TaskExecutionTransport,
     TransportError,
     transport_failure,
+    validation_fingerprint,
 )
 from doom_team.validation import (
     DEFAULT_COMMAND_TIMEOUT,
@@ -221,6 +222,10 @@ class MissionRunner:
             transport if transport is not None else InProcessTaskTransport(self._task_runner)
         )
         self._validation_policy = validation_policy
+        self._validation_fingerprint = (
+            validation_fingerprint(validation_policy, self._validation_commands)
+            if validation_policy == "python-quality" else ""
+        )
         self._transport_name = transport_name or (
             "gas_city" if transport is not None else "in_process"
         )
@@ -242,6 +247,7 @@ class MissionRunner:
             objective_id=mission.objective.id,
             max_attempts_per_task=self._max_attempts,
             task_transport=self._transport_name,
+            validation_fingerprint=self._validation_fingerprint,
         )
         self._emit("MISSION_STARTED", {"mission_id": mission_id, "tasks": len(mission.tasks)})
         self._store.record_plan(mission_id, mission)
@@ -319,6 +325,12 @@ class MissionRunner:
         record = self._store.load(mission_id)
         if record.status != MISSION_RUNNING:
             return self._result(record)
+
+        if record.validation_fingerprint != self._validation_fingerprint:
+            return self._blocked(
+                mission_id, "validation_policy_mismatch",
+                "resume validation policy/commands differ from the pinned mission",
+            )
 
         outcome = self._reconcile(mission_id, repo)
         if outcome is not None:
@@ -607,6 +619,7 @@ class MissionRunner:
                 task=task,
                 decision=decision,
                 validation_policy=self._validation_policy,
+                validation_fingerprint=self._validation_fingerprint,
                 objective_summary=self._objective_summary(mission_id),
                 dependency_summary=self._dependency_summary(accepted),
                 remediation_summary=remediation,

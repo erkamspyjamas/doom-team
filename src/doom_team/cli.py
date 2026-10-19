@@ -50,6 +50,7 @@ from doom_team.observability import (
     check_readiness,
 )
 from doom_team.usage import EventLogError, aggregate_event_log
+from doom_team.transport import TransportError, resolve_validation_policy
 from doom_team.verdicts import DurableVerdictStore
 
 EXIT_SUCCESS = 0
@@ -264,7 +265,7 @@ def _cmd_run_mission(settings: Settings, objective: str, destination: str | None
         return EXIT_CONFIG_ERROR
     try:
         runner = _build_mission_runner(settings, client, sink=sink)
-    except (RuntimeError_, ConfigError) as exc:
+    except (RuntimeError_, ConfigError, TransportError) as exc:
         print(f"run: task transport unavailable: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     try:
@@ -297,6 +298,12 @@ def _build_mission_runner(
     store = MissionStore(settings.state_dir, secret_values=settings.redaction_secrets())
     if sink is None:
         sink = _make_event_sink(settings)
+    try:
+        commands = resolve_validation_policy(
+            settings.validation_policy, typecheck_target=settings.python_typecheck_target,
+        )
+    except TransportError as exc:
+        raise ConfigError(str(exc)) from exc
     transport = build_task_execution_transport(settings, client, event_sink=sink)
     return MissionRunner(
         client,
@@ -307,6 +314,8 @@ def _build_mission_runner(
         transport=transport,
         transport_name=settings.task_transport,
         validation_timeout=settings.validation_command_timeout,
+        validation_policy=settings.validation_policy,
+        validation_commands=commands,
     )
 
 
@@ -324,7 +333,7 @@ def _cmd_resume(settings: Settings, mission_id: str) -> int:
         return EXIT_CONFIG_ERROR
     try:
         runner = _build_mission_runner(settings, client, sink=sink)
-    except (RuntimeError_, ConfigError) as exc:
+    except (RuntimeError_, ConfigError, TransportError) as exc:
         print(f"resume: task transport unavailable: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
     try:
@@ -455,7 +464,7 @@ def _cmd_doctor(settings: Settings) -> int:
     # the operator into a mission that fails on its first attempt.
     try:
         build_task_execution_transport(settings, None)  # type: ignore[arg-type]
-    except (RuntimeError_, ConfigError) as exc:
+    except (RuntimeError_, ConfigError, TransportError) as exc:
         print(f"doctor: task transport unusable: {exc}", file=sys.stderr)
         return EXIT_STATE_ERROR
     print(f"doctor: task_transport {settings.task_transport} usable")

@@ -34,6 +34,7 @@ from doom_team.transport import (
     TaskAttemptRequest,
     TransportError,
     resolve_validation_policy,
+    validation_fingerprint,
     result_to_dict,
     transport_failure,
 )
@@ -99,8 +100,17 @@ def run_attempt(request: TaskAttemptRequest) -> dict[str, Any]:
         event_sink=sink,
         producer_run=f"{request.mission_id}/{request.task_id}",
     )
+    commands = resolve_validation_policy(
+        request.validation_policy, typecheck_target=settings.python_typecheck_target,
+    )
+    if "python-quality" in (request.validation_policy, settings.validation_policy):
+        if (
+            request.validation_policy != settings.validation_policy
+            or request.validation_fingerprint != validation_fingerprint(request.validation_policy, commands)
+        ):
+            raise TransportError("worker validation policy/target differs from the pinned request")
     runner = ProductionTaskRunner(
-        client, validation_commands=resolve_validation_policy(request.validation_policy),
+        client, validation_commands=commands,
         validation_timeout=settings.validation_command_timeout,
         quality_inference=build_quality_inference_client(
             settings, event_sink=sink,
