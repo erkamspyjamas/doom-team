@@ -96,6 +96,95 @@ are recorded by this telemetry. Missing cost remains unknown. Failed calls
 may have unreported charges, so summed usage is reported known cost rather
 than a guaranteed complete account invoice.
 
+## Reporting usage and cost offline
+
+`doom-team usage` summarizes the `PROVIDER_USAGE`, `PROVIDER_ERROR`, and
+`PROVIDER_FALLBACK` events already written under a state directory. It is a
+read-only, offline operator command: it loads no provider settings or
+credentials, makes no network calls, creates no stores, files, or
+directories, and never modifies the state it reads. It parses
+`<state>/events/events.jsonl` directly, so it also works on a copied or
+archived state directory.
+
+### State selection and flag placement
+
+```bash
+doom-team usage --state-dir /absolute/state         # text report
+doom-team usage --state-dir /absolute/state --json  # strict JSON report
+doom-team --state-dir /absolute/state usage --json  # same, flag before subcommand
+DOOM_STATE_DIR=/absolute/state doom-team usage --json
+```
+
+`--state-dir` is accepted before or after the `usage` subcommand; both
+positions resolve to the same value and an explicit flag always takes
+precedence over `DOOM_STATE_DIR`. `--json` belongs to the `usage` subcommand
+and must follow it. If neither the flag nor the environment variable selects
+a state directory, the command exits 1.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Report produced. An existing state directory with no `events/events.jsonl` is a successful, all-zero report. |
+| 1 | No state directory selected (no `--state-dir`, no `DOOM_STATE_DIR`). |
+| 2 | The selected state is missing or not a directory, or the event log cannot be aggregated (malformed JSON, invalid counters or costs, unreadable file). |
+
+Diagnostics for invalid data name only the failing line or field; raw event
+contents, prompts, reasoning text, credentials, and provider response bodies
+are never echoed.
+
+### `--json` schema (`schema_version: 1`)
+
+A single strict JSON object on one line, with no other output:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | Always `1`. |
+| `successful_calls` | Number of `PROVIDER_USAGE` events. |
+| `prompt_tokens` | Sum of recorded prompt tokens over successful calls. |
+| `completion_tokens` | Sum of recorded completion tokens over successful calls. |
+| `reasoning_tokens` | Sum of recorded reasoning tokens, or `null` if no successful call recorded reasoning. |
+| `known_cost_usd` | Sum of reported costs, or `null` if no call reported a cost. |
+| `calls_without_cost` | Successful calls whose cost is missing/`null`. |
+| `calls_without_reasoning_count` | Successful calls whose reasoning token count is missing/`null`. |
+| `provider_errors` | Number of `PROVIDER_ERROR` events. |
+| `fallback_events` | Number of `PROVIDER_FALLBACK` events. |
+| `length_finishes` | Successful calls whose finish reason is `length`. |
+| `by_model` | Per-model rows, ordered as described below. |
+
+`by_model` is a deterministically sorted list ordered by `(provider, model)`.
+Each row groups `PROVIDER_USAGE` events on their recorded provider and model
+fields and carries `provider`, `model`, `successful_calls`, `prompt_tokens`,
+`completion_tokens`, `reasoning_tokens`, `known_cost_usd`,
+`calls_without_cost`, `calls_without_reasoning_count`, and `length_finishes`
+with the same semantics as the totals.
+
+Unknown is not zero. A missing or `null` cost or reasoning count stays
+explicitly unknown: the aggregate field is `null` and the matching
+`calls_without_*` counter is incremented. An explicitly recorded `0` cost or
+`0` reasoning tokens is known and counts as zero, not as missing.
+`known_cost_usd` is therefore the sum of costs the provider actually
+reported, not a guaranteed invoice total.
+
+Default (non-`--json`) output prints the same aggregates as labelled lines,
+marks unknown cost and reasoning as `unknown`, and lists one
+`provider=... model=...` line per `by_model` row. It never prints prompts,
+reasoning text, credentials, raw provider responses, or arbitrary event
+fields.
+
+### Limitations
+
+- Totals aggregate every event in the selected state directory. They are
+  **not** mission-filtered: several missions sharing one state directory are
+  summed together.
+- Failed calls may have unreported charges. `known_cost_usd` covers reported
+  usage only; no estimate is made for the cost of failed calls.
+- Quality calls carry a `/quality` producer suffix in telemetry, but the
+  report deliberately does not infer QA versus Reviewer attribution.
+- Unrelated legacy event kinds and blank lines are ignored.
+- Malformed JSON or invalid usage counters/costs fail closed with exit 2 and
+  a concise diagnostic; they are never silently skipped or coerced.
+
 Compatibility was checked against OpenRouter's live catalog and successful
 reasoning/JSON probes. General references:
 

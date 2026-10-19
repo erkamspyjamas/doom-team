@@ -1,7 +1,9 @@
 # Usage Reporting
 
 `doom-team usage` is a read-only, offline operator command that summarizes
-provider usage events in a state directory.
+provider usage events in a state directory. The full field reference, exit
+codes, and limitations live in
+[OPENROUTER.md](OPENROUTER.md#reporting-usage-and-cost-offline).
 
 ## Usage
 
@@ -25,8 +27,9 @@ provided, the command exits 1.
 ## Output
 
 `--json` emits a single strict JSON object with `schema_version: 1` and the
-aggregate fields plus `by_model`. Unknown cost/reasoning values are `null`,
-never silently zero. `known_cost_usd` is `null` when no costs were reported.
+aggregate fields plus `by_model`. `by_model` is sorted deterministically by
+`(provider, model)`. Unknown cost/reasoning values are `null`, never silently
+zero. `known_cost_usd` is `null` when no costs were reported.
 
 Default text output labels known cost, missing-cost counts, tokens, errors,
 fallbacks, and per-model usage. It never prints prompts, reasoning text,
