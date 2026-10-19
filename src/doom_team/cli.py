@@ -1,6 +1,7 @@
 """Command-line interface for the Doom Team service.
 
-Provides subcommands: run, serve, status, doctor, approve, backup, restore.
+Provides subcommands: run, serve, status, doctor, approve, backup, restore,
+usage.
 
 Exit codes:
     0 - success / healthy
@@ -48,6 +49,7 @@ from doom_team.observability import (
     check_health,
     check_readiness,
 )
+from doom_team.usage import EventLogError, aggregate_event_log
 from doom_team.verdicts import DurableVerdictStore
 
 EXIT_SUCCESS = 0
@@ -153,6 +155,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_state_dir(restore_parser)
     restore_parser.add_argument("--backup-path", required=True, help="Path to a backup")
+
+    usage_parser = subparsers.add_parser(
+        "usage",
+        help="Summarize provider usage from durable state (read-only, offline)",
+    )
+    _add_state_dir(usage_parser)
+    usage_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a single strict JSON object",
+    )
 
     return parser
 
@@ -573,19 +586,72 @@ def _cmd_restore(backup_path: Path, state_dir: Path) -> int:
     return EXIT_SUCCESS
 
 
+def _format_optional_int(value: int | None) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _format_optional_cost(value: float | None) -> str:
+    return "unknown" if value is None else f"{value:.6f}"
+
+
+def _cmd_usage(state_dir: Path, *, as_json: bool) -> int:
+    """Summarize provider usage from the state directory without side effects."""
+    try:
+        report = aggregate_event_log(state_dir)
+    except EventLogError as exc:
+        print(f"usage: {exc}", file=sys.stderr)
+        return EXIT_STATE_ERROR
+    if as_json:
+        print(json.dumps(report.as_dict(), sort_keys=True))
+        return EXIT_SUCCESS
+
+    print(f"state_dir: {state_dir}")
+    print("scope: all events in this state directory (not mission-filtered)")
+    print(f"successful_calls: {report.successful_calls}")
+    print(f"prompt_tokens: {report.prompt_tokens}")
+    print(f"completion_tokens: {report.completion_tokens}")
+    print(f"reasoning_tokens: {_format_optional_int(report.reasoning_tokens)}")
+    print(f"known_cost_usd: {_format_optional_cost(report.known_cost_usd)}")
+    print(f"calls_without_cost: {report.calls_without_cost}")
+    print(f"calls_without_reasoning_count: {report.calls_without_reasoning_count}")
+    print(f"provider_errors: {report.provider_errors}")
+    print(f"fallback_events: {report.fallback_events}")
+    print(f"length_finishes: {report.length_finishes}")
+    print(f"by_model: {len(report.by_model)}")
+    for row in report.by_model:
+        print(
+            "  - "
+            f"provider={row.provider} "
+            f"model={row.model} "
+            f"successful_calls={row.successful_calls} "
+            f"prompt_tokens={row.prompt_tokens} "
+            f"completion_tokens={row.completion_tokens} "
+            f"reasoning_tokens={_format_optional_int(row.reasoning_tokens)} "
+            f"known_cost_usd={_format_optional_cost(row.known_cost_usd)} "
+            f"calls_without_cost={row.calls_without_cost} "
+            f"calls_without_reasoning_count={row.calls_without_reasoning_count} "
+            f"length_finishes={row.length_finishes}"
+        )
+    return EXIT_SUCCESS
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the doom-team console script."""
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command in ("backup", "restore"):
+    if args.command in ("backup", "restore", "usage"):
         state_dir = _resolve_state_dir(args)
         if not state_dir:
             print("configuration error: state_dir is required", file=sys.stderr)
             return EXIT_CONFIG_ERROR
         if args.command == "backup":
             return _cmd_backup(Path(state_dir), Path(args.backup_dir))
-        return _cmd_restore(Path(args.backup_path), Path(state_dir))
+        if args.command == "restore":
+            return _cmd_restore(Path(args.backup_path), Path(state_dir))
+        return _cmd_usage(
+            Path(state_dir), as_json=bool(getattr(args, "json", False))
+        )
 
     try:
         settings = _load_settings(args)
