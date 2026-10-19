@@ -224,7 +224,7 @@ class MissionRunner:
         self._validation_policy = validation_policy
         self._validation_fingerprint = (
             validation_fingerprint(validation_policy, self._validation_commands)
-            if validation_policy == "python-quality" else ""
+            if validation_policy in ("python-quality", "project") else ""
         )
         self._transport_name = transport_name or (
             "gas_city" if transport is not None else "in_process"

@@ -56,6 +56,7 @@ class ValidationCommand:
 
     label: str
     argv: tuple[str, ...]
+    allow_network: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,17 +175,19 @@ def execute_command(
     cwd: str | Path | None = None,
     timeout: float = DEFAULT_COMMAND_TIMEOUT,
     environment: Mapping[str, str] | None = None,
+    allow_network: bool = False,
 ) -> CommandResult:
     """Execute one structured command inside the workspace and record it.
 
-    Never uses a shell; the sanitized-environment and network-isolation
-    guards of :func:`run_guarded` apply. A timeout is recorded as an explicit
+    Never uses a shell. Environment sanitization always applies; only a trusted
+    validation policy may explicitly allow network for dependency setup.
+    A timeout is recorded as an explicit
     failed result rather than an exception, so evidence always reflects what
     actually happened.
     """
     safe_argv = _validate_argv(argv)
     resolved_cwd = _confined_cwd(cwd if cwd is not None else workspace_root, workspace_root)
-    command = network_isolation_prefix() + list(safe_argv)
+    command = ([] if allow_network else network_isolation_prefix()) + list(safe_argv)
     environment = sanitize_env(environment)
     started = time.monotonic()
     # Child output spills to disk files (never pipes held in memory) so a
@@ -247,13 +250,14 @@ def run_validation_commands(
                     argv = (str(candidate.interpreter), "-I", *argv[1:])
                 result = execute_command(
                     argv, workspace_root=root, timeout=timeout, environment=candidate.environment,
+                    allow_network=command.allow_network,
                 )
                 prepared.append(ValidationResult(label=command.label, command=result))
             return tuple(prepared)
     results: list[ValidationResult] = []
     for command in commands:
         result = execute_command(
-            command.argv, workspace_root=workspace_root, timeout=timeout
+            command.argv, workspace_root=workspace_root, timeout=timeout, allow_network=command.allow_network,
         )
         results.append(ValidationResult(label=command.label, command=result))
     return tuple(results)

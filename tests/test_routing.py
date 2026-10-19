@@ -51,7 +51,7 @@ def test_specialists_expose_distinct_instruction_profiles() -> None:
     profiles = [profile.instruction_profile for profile in SPECIALIST_REGISTRY]
     assert len(set(profiles)) == len(profiles)
     ids = [profile.specialist_id for profile in SPECIALIST_REGISTRY]
-    assert len(set(ids)) == len(ids) == 4
+    assert len(set(ids)) == len(ids) == 5
     backend = specialist_by_id("python_backend").instruction_profile
     writer = specialist_by_id("technical_writer").instruction_profile
     assert "API" in backend and "README" in writer

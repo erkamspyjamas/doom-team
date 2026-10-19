@@ -103,7 +103,7 @@ def run_attempt(request: TaskAttemptRequest) -> dict[str, Any]:
     commands = resolve_validation_policy(
         request.validation_policy, typecheck_target=settings.python_typecheck_target,
     )
-    if "python-quality" in (request.validation_policy, settings.validation_policy):
+    if {request.validation_policy, settings.validation_policy} & {"python-quality", "project"}:
         if (
             request.validation_policy != settings.validation_policy
             or request.validation_fingerprint != validation_fingerprint(request.validation_policy, commands)

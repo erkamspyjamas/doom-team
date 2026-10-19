@@ -43,3 +43,10 @@ selected state directory and are not mission-filtered.
 See `runbooks/USAGE.md` for the command reference and exit codes, and
 `runbooks/OPENROUTER.md` for the `schema_version: 1` JSON fields, the
 null/unknown cost and reasoning semantics, and how usage events are produced.
+
+## Native technology stacks
+
+New operator-console jobs let the team choose the implementation stack and
+dependencies. CLI operators can select `DOOM_VALIDATION_POLICY=project` for the
+same native setup/build/check/test workflow. The runner using Python 3.11 does
+not constrain the project language. See [project validation](runbooks/PROJECT_VALIDATION.md).

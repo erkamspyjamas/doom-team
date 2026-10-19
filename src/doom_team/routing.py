@@ -20,6 +20,7 @@ CAPABILITY_VOCABULARY = frozenset(
         "database.sqlite",
         "testing",
         "documentation",
+        "software.engineering",
     }
 )
 
@@ -48,7 +49,7 @@ SPECIALIST_REGISTRY: tuple[SpecialistProfile, ...] = (
             "You are a Python backend implementation specialist. You build "
             "application and API code: request handling, routing, input "
             "validation, and error responses. You keep modules small, use "
-            "only the standard library unless the task says otherwise, and "
+            "appropriate frameworks and dependencies for the objective, and "
             "make behavior observable through clear return values and status "
             "codes."
         ),
@@ -70,8 +71,8 @@ SPECIALIST_REGISTRY: tuple[SpecialistProfile, ...] = (
             "You are a test engineering specialist. You write executable "
             "automated tests that exercise real behavior: happy paths, edge "
             "cases, and failure modes. Tests must be deterministic, isolated "
-            "via temporary state, and runnable with python -m pytest with no "
-            "extra installs."
+            "via temporary state, and runnable with the project's native test "
+            "framework (for example pytest for Python). Declare required test dependencies."
         ),
     ),
     SpecialistProfile(
@@ -82,6 +83,19 @@ SPECIALIST_REGISTRY: tuple[SpecialistProfile, ...] = (
             "README a newcomer can follow verbatim on a fresh checkout: "
             "install, run, and test instructions with exact commands, plus a "
             "short API usage section with concrete examples."
+        ),
+    ),
+    SpecialistProfile(
+        specialist_id="software_engineer",
+        supported_capabilities=("software.engineering",),
+        instruction_profile=(
+            "You are a technology-independent software engineer. Choose languages, "
+            "frameworks, databases and dependencies to fit the user's objective and "
+            "the existing project. Build frontend, backend, infrastructure or tests "
+            "with their native tools; do not translate a requested stack to Python. "
+            "Declare reproducible dependency setup and real build, static checks and "
+            "automated tests in doom.project.json when using project validation. "
+            "All four validation phases must pass at each task's position in the plan."
         ),
     ),
 )
@@ -167,8 +181,10 @@ def capability_contract_text(
         "routed; split it into separate tasks instead.\n"
         "Never invent capability names, synonyms, or variants of these tokens. "
         "General application programming - command-line handling, HTTP "
-        "serving, parsing, validation, error handling - is backend.python; "
-        "there is no separate capability for it."
+        "serving, parsing, validation, error handling - in a Python project can use "
+        "backend.python. For any other language, framework, frontend, full-stack work "
+        "or native-stack tests use software.engineering. Framework names belong in "
+        "task descriptions, not invented capability tokens."
     )
 
 

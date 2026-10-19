@@ -8,9 +8,9 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc14`, `5f090e7fd52b73effee769175e4274a4217b4ad0`; trusted task/final Python quality profile, verified offline |
+| Immutable release baseline | `v0.1.0-rc14`, `5f090e7fd52b73effee769175e4274a4217b4ad0`; trusted task/final Python quality profile, verified offline |
 | Latest verified GitHub publication | Main `557af9986585420330992e737d6a791dd02258ec`; RC10–RC13 published and verified, RC13 `0a69725dbe355aa58e1acb75597a18d7a05f8992`; local RC14 publication pending |
-| Documentation | This status/work-list update follows the immutable RC14 runtime tag |
+| Local editable feature | Additional untagged `project` policy and technology-independent engineering route; console defaults to native-stack jobs. See evidence below. |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
@@ -30,6 +30,21 @@ remain unpublished until separately authorized. Inspect them with `git log -1`,
 
 ## Demonstrated behavior
 
+- TECH-01 removes the operator console's inherited PocketLedger-only stack
+  restriction. New jobs choose their languages/frameworks/dependencies and use
+  native setup/build/check/test commands in `doom.project.json`, before QA,
+  Reviewer and fresh final validation. Old mission policies/evidence are retained.
+  Eighteen new-policy tests and 30 current console tests passed; real Node tests
+  (positive/negative) traversed the mission lifecycle. A real React dependency
+  installation/build/check/test passed from a fresh isolated wheel installation.
+  Ruff and strict mypy passed (40 engine modules, six console modules).
+  The broad regression run recorded 897 passes and one unchanged CLI shutdown
+  test timing out at five seconds. All 15 tests in that module passed on isolated
+  repeat; the initial failure remains recorded and is not treated as a clean
+  full-suite pass. Source of the CLI/test matches immutable RC14 exactly.
+  Evidence: `runtime/doom-console/verification/project-policy-verification.json`;
+  the new policy is documented in `runbooks/PROJECT_VALIDATION.md`.
+
 - QUAL-01 fixed the task/final validation-policy mismatch exposed by
   PocketLedger V2. The optional trusted `python-quality` profile executes
   compile, pytest, Ruff and strict mypy before task QA/Reviewer and on fresh
@@ -41,7 +56,9 @@ remain unpublished until separately authorized. Inspect them with `git log -1`,
   a fresh offline wheel build/install and all 883 tests passed. V2 was stopped
   by user authorization with zero integrations, known USD 0.02202305 plus
   possible unreported interrupted-call charge. Its original history remains
-  unchanged. Fresh same-contract V3 is preregistered; outcome pending.
+  unchanged. Same-contract V3 reached human review: 5/5 tasks in eight attempts,
+  88 tests and 445 external checks passed. Candidate
+  `7b0b54aa5ad3c760c91a4d03bed00c86bdb4e793`; known USD 0.12593979.
 
 - PLAN-01 fixed the PocketLedger planning blocker's undisclosed size limits.
   RC13 renders the prompt from actual configured task/description/dependency

@@ -11,6 +11,20 @@ starting. Preserve failures and do not assist a generated candidate mid-run.
 
 ## P0 — Finish the current baseline
 
+- [x] **TECH-01 — Remove the console's inherited technology restriction.**
+  Native-stack setup/build/check/test gates, general engineering capability,
+  explicit dependency network access with credential scrubbing, policy/worker
+  fingerprints, real Node positive/negative tests and installed React proof.
+  Historical policies remain pinned. New jobs and the untouched pending game
+  draft use project validation. Evidence: `runtime/doom-console/verification/`.
+
+- [ ] **SERVE-01 — Investigate intermittent CLI shutdown timeout.** The broad
+  native-policy regression run had 897 passes and one five-second timeout in
+  `test_serve_cli_wins_over_env[False]`; all 15 module tests passed separately.
+  CLI/test bytes match RC14. Preserve the original failure; do not relax the
+  timeout or change a running user's job to hide it. The local HTTP console
+  does not use the legacy CLI `serve` loop.
+
 - [x] **QUAL-01 — Execute required quality gates before review.** Local
   RC14 adds trusted optional python-quality/pocketledger target configuration,
   actual Ruff/strict-mypy commands in worker/task and fresh final validation,
@@ -71,7 +85,7 @@ new paid pilot was started.
 
 ## P1 — Broaden real-work evidence
 
-- [ ] **SHOW-01 — Complete the medium PocketLedger project showcase.**
+- [x] **SHOW-01 — Complete the medium PocketLedger project showcase.**
   Initial run failed at planning (one call, known USD 0.00550958, no mission
   or implementation). After PLAN-01 validation and fresh run authorization,
   retain the exact project objective and external acceptance from
@@ -87,7 +101,10 @@ new paid pilot was started.
   unknown interrupted charge remain preserved. After QUAL-01 validation,
   fresh V3 is preregistered at `pilots/doom-team-showcase-pocketledger-v3-20261019/`,
   with byte-identical objective/acceptance and unchanged selected models/high
-  reasoning. Leave SHOW-01 open until its complete outcome is verified.
+  reasoning. V3 completed naturally at human review: 5/5 tasks, eight attempts,
+  88 internal/fresh tests and 445 external acceptance checks passed on candidate
+  `7b0b54aa5ad3c760c91a4d03bed00c86bdb4e793`. Known USD 0.12593979;
+  zero operator candidate-code interventions. Human approval remains pending.
 
 The following three cases use fresh destinations/state and new external
 acceptance criteria. They are separate from the frozen benchmark. Retain

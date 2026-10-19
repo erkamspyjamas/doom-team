@@ -374,8 +374,8 @@ class ConfigLoader:
         policy = validation_policy
         if policy is None:
             policy = env_value("validation_policy") or file_values.get("validation_policy", "default")
-        if policy not in ("default", "python-quality"):
-            raise ConfigError("validation_policy must be default or python-quality")
+        if policy not in ("default", "python-quality", "project"):
+            raise ConfigError("validation_policy must be default, python-quality or project")
         target = python_typecheck_target
         if target is None:
             target = env_value("python_typecheck_target") or file_values.get("python_typecheck_target", ".")

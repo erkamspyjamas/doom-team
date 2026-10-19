@@ -82,6 +82,14 @@ def resolve_validation_policy(
     name: str, *, typecheck_target: str = "."
 ) -> tuple[ValidationCommand, ...]:
     """Resolve trusted commands, pinning quality tools before any model call."""
+    if name == "project":
+        return tuple(
+            ValidationCommand(
+                label=label, argv=(sys.executable, "-I", "-m", "doom_team.project_validation", phase),
+                allow_network=phase == "setup",
+            )
+            for label, phase in (("dependencies", "setup"), ("build", "build"), ("checks", "checks"), ("tests", "test"))
+        )
     if name == "python-quality":
         try:
             target = validate_python_typecheck_target(typecheck_target)
@@ -106,7 +114,9 @@ def resolve_validation_policy(
 
 def validation_fingerprint(policy: str, commands: tuple[ValidationCommand, ...]) -> str:
     """Bind quality requests to the exact trusted commands and source target."""
-    payload = {"policy": policy, "commands": [(c.label, c.argv) for c in commands]}
+    payload: dict[str, Any] = {"policy": policy, "commands": [(c.label, c.argv) for c in commands]}
+    if any(c.allow_network for c in commands):
+        payload["network_access"] = [c.allow_network for c in commands]
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
