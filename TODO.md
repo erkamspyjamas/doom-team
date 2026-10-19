@@ -87,11 +87,13 @@ their known USD 0.02821515 total; do not count this as a first-pass success.
   Verify preserved plan/retry budgets and provenance, no duplicate task
   integration, and no unreviewed frontier advancement.
 
-RES-01 is authorized for a fresh real-process exercise: after one task lands,
-SIGKILL a running dependent task, then invoke the installed CLI resume on the
-same durable mission. Pre-register cut point, acceptance and budgets in
-`pilots/doom-team-res01-process-resume-20261019/`. Leave RES-01 open until its
-process/provenance/retry/no-duplicate checks pass.
+RES-01 first exercise preserved all process/provenance/retry/no-duplicate
+checks, but the overall result was blocked by an operator-created fixture
+import-spacing error that baseline lint preflight missed. Preserve that result
+in `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md`. The user
+authorized a fresh repeat in `pilots/doom-team-res01-process-resume-v2-20261019/`: corrected new fixture, every baseline quality gate preflighted, same objective
+and cut/process/behavior contracts, frozen tools/effective lint settings.
+Leave RES-01 open until all registered final gates pass.
 
 - [ ] **ISO-01 — OS-level validation containment.** Define filesystem,
   process and network boundaries for model-authored build/test code. Verify

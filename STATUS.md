@@ -83,8 +83,12 @@ benchmark, a ten-case holdout, or a general real-repository reliability rate.
   [the context contract](runbooks/INSTALL.md#task-workspace-context).
 - Candidate wheel/venv isolation prevents stale package imports. It is not an
   OS filesystem/process sandbox; containment work is tracked as `ISO-01`.
-- Crash/resume has unit coverage; the broader real-process exercise is
-  `RES-01`. One successful self-development feature does not close all
+- RES-01 demonstrated actual SIGKILL/new-process resume, preserved plan and
+  retry budgets, no duplicated integration, and terminal resume with no work.
+  Its first overall result stayed blocked because an unchanged operator-made
+  fixture failed Ruff; the corrected-fixture repeat is being prepared under
+  `pilots/doom-team-res01-process-resume-v2-20261019/`. Keep RES-01 open until
+  every registered gate passes. These bounded cases do not close broader
   reliability and production-readiness goals in [ROADMAP.md](ROADMAP.md).
 
 ## Evidence index
@@ -96,6 +100,8 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| RES-01 first exercise | `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md` | Actual process recovery passed; overall blocked by operator fixture/preflight error; retained unchanged |
+| RES-01 corrected repeat | `pilots/doom-team-res01-process-resume-v2-20261019/README.md` | New fixture, full offline preflight, frozen effective lint settings; result pending |
 | PROOF-03 initial review | `pilots/doom-team-proof03-redaction-refactor-20261019/VERIFICATION.md` | Original registered passes plus retained supplemental review block; original mission unapproved |
 | PROOF-03 follow-up | `pilots/doom-team-proof03-redaction-fix-20261019/VERIFICATION.md` | Complete final candidate, new regressions, independent checks and both-run history |
 | RC12 approval/integration | `pilots/doom-team-proof03-release-rc12-20261019/REPORT.md` | Final composite approval, exact-SHA fast-forward and immutable local RC12; no push |
