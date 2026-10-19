@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from doom_team.ports import InferenceTelemetryPort
+from doom_team.redaction import redact_value
 
 
 @dataclass(frozen=True)
@@ -67,19 +68,7 @@ class RedactingEventSink:
         self._secrets = tuple(s for s in secret_values if s)
 
     def _redact(self, value: Any) -> Any:
-        if isinstance(value, str):
-            redacted = value
-            for secret in self._secrets:
-                if secret and secret in redacted:
-                    redacted = redacted.replace(secret, "[REDACTED]")
-            return redacted
-        if isinstance(value, dict):
-            return {k: self._redact(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._redact(v) for v in value]
-        if isinstance(value, tuple):
-            return tuple(self._redact(v) for v in value)
-        return value
+        return redact_value(value, self._secrets)
 
     def record(self, event: Event) -> None:
         redacted = Event(
