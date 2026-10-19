@@ -39,6 +39,12 @@ credential is missing. There are no defaults for required values.
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 | `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
 | `nvidia_reasoning_effort` | no | `DOOM_NVIDIA_REASONING_EFFORT` | Reasoning effort for the NVIDIA route's request profile: `max` (default), `high`, or `none`; exact lowercase vocabulary, invalid values fail closed |
+| `openrouter_reasoning_effort` | no | `DOOM_OPENROUTER_REASONING_EFFORT` | Unset preserves the old OpenRouter payload; explicit `low`, `high`, or `max` enables internal reasoning on both OpenRouter routes and excludes reasoning text from responses |
+| `openrouter_max_tokens` | no | `DOOM_OPENROUTER_MAX_TOKENS` | Total reasoning plus visible output budget, integer 1024..262144, default 65536; sent with explicit OpenRouter reasoning or JSON mode |
+| `openrouter_json_mode` | no | `DOOM_OPENROUTER_JSON_MODE` | Boolean, default false; request JSON object output and require endpoint support |
+| `provider_only` | no | `DOOM_PROVIDER_ONLY` | CSV or JSON list of allowed primary OpenRouter endpoint tags; empty means unrestricted |
+| `fallback_provider_only` | with fallback | `DOOM_FALLBACK_PROVIDER_ONLY` | Allowed alternate OpenRouter endpoint tags, independent of the primary restriction |
+| `quality_model_route` | no | `DOOM_QUALITY_MODEL_ROUTE` | `primary` (default) or `fallback`; chooses the initial model for independent QA/Reviewer calls, swapping whole routes when needed |
 | `fallback_provider` | with fallback | `DOOM_FALLBACK_PROVIDER` | Provider name of the single fallback inference route (e.g. `openrouter`) |
 | `fallback_model_name` | with fallback | `DOOM_FALLBACK_MODEL_NAME` | Model served by the fallback route |
 | `fallback_base_url` | with fallback | `DOOM_FALLBACK_BASE_URL` | Fallback route base URL, same rules as `provider_base_url` |
@@ -82,6 +88,16 @@ is not a Doom Team setting and is not required by a properly installed runtime;
 see [Install](../runbooks/INSTALL.md).
 
 ## Provider routing
+
+Explicit OpenRouter reasoning is independent of the NVIDIA knob. A configured
+OpenRouter reasoning profile sends `reasoning.enabled=true`, the selected
+effort, `reasoning.exclude=true`, the total output ceiling, temperature 1.0,
+top_p 0.95, and non-streaming output. JSON mode sends a JSON object response
+format. These opt-in controls require compatible endpoints rather than being
+silently dropped. The default OpenRouter payload is unchanged when neither
+option is enabled. Endpoint `only` restrictions follow each route when quality
+routing swaps primary and alternate. See [two-model operation](../runbooks/OPENROUTER.md)
+for the measured GLM/DeepSeek profiles, usage telemetry, and safe launcher.
 
 Request options are route-specific. `provider_order`, `forbidden_providers`,
 and `allow_fallbacks` are sent as request-body routing preferences only to an

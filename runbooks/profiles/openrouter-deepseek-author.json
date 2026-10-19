@@ -1,0 +1,28 @@
+{
+  "name": "deepseek-author-glm-quality-high",
+  "environment": {
+    "DOOM_MODEL_PROVIDER": "openrouter",
+    "DOOM_MODEL_NAME": "deepseek/deepseek-v4.1-flash-1017",
+    "DOOM_PROVIDER_BASE_URL": "https://openrouter.ai/api",
+    "DOOM_PROVIDER_API_KEY_ENV": "OPENROUTER_API_KEY",
+    "DOOM_PROVIDER_ORDER": "Z.AI,DeepInfra,SiliconFlow",
+    "DOOM_PROVIDER_ONLY": "deepinfra/fp8",
+    "DOOM_FORBIDDEN_PROVIDERS": "Relace",
+    "DOOM_ALLOW_FALLBACKS": "true",
+    "DOOM_FALLBACK_PROVIDER": "openrouter",
+    "DOOM_FALLBACK_MODEL_NAME": "z-ai/glm-5.3-flash",
+    "DOOM_FALLBACK_BASE_URL": "https://openrouter.ai/api",
+    "DOOM_FALLBACK_API_KEY_ENV": "OPENROUTER_API_KEY",
+    "DOOM_FALLBACK_PROVIDER_ONLY": "z-ai/fp8,siliconflow/fp8",
+    "DOOM_QUALITY_MODEL_ROUTE": "fallback",
+    "DOOM_OPENROUTER_REASONING_EFFORT": "high",
+    "DOOM_OPENROUTER_MAX_TOKENS": "65536",
+    "DOOM_OPENROUTER_JSON_MODE": "true",
+    "DOOM_REQUEST_TIMEOUT": "600",
+    "DOOM_SEMANTIC_RETRIES": "3",
+    "DOOM_TASK_TRANSPORT": "gas_city",
+    "DOOM_GAS_CITY_BINARY": "/home/eko/doom/autopilot/.tools/bin/gc",
+    "DOOM_GAS_CITY_CITY": "/home/eko/doom/runtime/doom-team-openrouter/city",
+    "DOOM_GAS_CITY_ATTEMPT_TIMEOUT": "4500"
+  }
+}

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from doom_team.config import TRANSPORT_GAS_CITY, TRANSPORT_IN_PROCESS, ConfigError, Settings
 from doom_team.gas_city_transport import GasCityTaskTransport
+from doom_team.inference import build_quality_inference_client
 from doom_team.observability import EventSink
 from doom_team.ports import InferencePort
 from doom_team.task_runner import ProductionTaskRunner
@@ -108,7 +109,10 @@ def build_task_execution_transport(
     if settings.task_transport == TRANSPORT_IN_PROCESS:
         return InProcessTaskTransport(
             ProductionTaskRunner(
-                inference, validation_commands=resolve_validation_policy(validation_policy)
+                inference, validation_commands=resolve_validation_policy(validation_policy),
+                quality_inference=build_quality_inference_client(
+                    settings, event_sink=event_sink, producer_run="quality"
+                ) if settings.quality_model_route == "fallback" else None,
             )
         )
     if settings.task_transport != TRANSPORT_GAS_CITY:

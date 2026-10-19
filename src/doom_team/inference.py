@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -66,6 +68,8 @@ class ProviderRouting:
     order: tuple[str, ...] = ("CoreWeave", "DeepInfra", "SiliconFlow")
     forbidden: tuple[str, ...] = ("Relace",)
     allow_fallbacks: bool = True
+    only: tuple[str, ...] = ()
+    require_parameters: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         """Return the OpenRouter `provider` request body fragment."""
@@ -74,6 +78,10 @@ class ProviderRouting:
             payload["ignore"] = list(self.forbidden)
         if self.allow_fallbacks:
             payload["allow_fallbacks"] = True
+        if self.only:
+            payload["only"] = list(self.only)
+        if self.require_parameters:
+            payload["require_parameters"] = True
         return payload
 
 
@@ -123,6 +131,7 @@ class OpenAICompatibleInferenceClient:
         urlopen: Callable[..., Any] | None = None,
         event_sink: EventSink | None = None,
         producer_run: str = "",
+        record_usage: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -139,6 +148,7 @@ class OpenAICompatibleInferenceClient:
         self._urlopen = urlopen if urlopen is not None else urllib.request.urlopen
         self._event_sink = event_sink
         self._producer_run = producer_run
+        self._record_usage = record_usage
 
     def _record_error(self, kind: str, detail: str, status: int | None = None) -> None:
         if self._event_sink is not None:
@@ -156,6 +166,7 @@ class OpenAICompatibleInferenceClient:
 
     def complete(self, messages: list[dict[str, str]]) -> InferenceResponse:
         """Send a chat completion request and return a normalized response."""
+        started = time.monotonic()
         payload: dict[str, Any] = {"model": self._model, "messages": messages}
         payload.update(self._extra_body)
         if self._routing is not None:
@@ -228,7 +239,33 @@ class OpenAICompatibleInferenceClient:
             ) from exc
 
         if 200 <= status < 300:
-            return self._parse_success(data)
+            response = self._parse_success(data)
+            if self._record_usage and self._event_sink is not None:
+                # Numeric usage only; never store reasoning text, raw provider
+                # payloads, prompts, or credentials. Metrics cannot eat success.
+                try:
+                    usage = data.get("usage", {})
+                    details = usage.get("completion_tokens_details") or {}
+                    reasoning_tokens = details.get("reasoning_tokens")
+                    cost = usage.get("cost")
+                    self._event_sink.record(Event(
+                        kind="PROVIDER_USAGE",
+                        details={
+                            "configured_model": self._model,
+                            "model": response.model,
+                            "provider": response.provider,
+                            "prompt_tokens": response.prompt_tokens,
+                            "completion_tokens": response.completion_tokens,
+                            "reasoning_tokens": reasoning_tokens if type(reasoning_tokens) is int else None,
+                            "cost_usd": cost if type(cost) in (int, float) and math.isfinite(cost) else None,
+                            "finish_reason": response.finish_reason,
+                            "duration_seconds": round(time.monotonic() - started, 3),
+                        },
+                        producer_role="inference", producer_run=self._producer_run,
+                    ))
+                except Exception:
+                    pass
+            return response
         failure = self._map_http_error(status, raw)
         self._record_error(failure.failure.kind, failure.failure.detail, failure.failure.status)
         raise failure
@@ -370,7 +407,7 @@ class RoutedInferenceClient:
                 ) from fallback_error
 
 
-def _route_extras(provider: str, settings: Settings) -> tuple[
+def _route_extras(provider: str, settings: Settings, *, fallback: bool = False) -> tuple[
     ProviderRouting | None, dict[str, Any] | None
 ]:
     """Per-route request options: profiles belong to routes, never globally.
@@ -381,13 +418,25 @@ def _route_extras(provider: str, settings: Settings) -> tuple[
     """
     name = provider.strip().lower()
     if name == "openrouter":
+        extra: dict[str, Any] = {}
+        if settings.openrouter_reasoning_effort:
+            extra.update({
+                "reasoning": {"enabled": True, "effort": settings.openrouter_reasoning_effort, "exclude": True},
+                "max_tokens": settings.openrouter_max_tokens,
+                "temperature": 1.0, "top_p": 0.95, "stream": False,
+            })
+        if settings.openrouter_json_mode:
+            extra["response_format"] = {"type": "json_object"}
+            extra["max_tokens"] = settings.openrouter_max_tokens
         return (
             ProviderRouting(
                 order=settings.provider_order,
                 forbidden=settings.forbidden_providers,
                 allow_fallbacks=settings.allow_fallbacks,
+                only=settings.fallback_provider_only if fallback else settings.provider_only,
+                require_parameters=bool(extra),
             ),
-            None,
+            extra or None,
         )
     if name == "nvidia":
         # The canonical profile with exactly ONE configurable axis: the
@@ -427,6 +476,7 @@ def build_inference_client(
         extra_body=extra_body,
         event_sink=event_sink,
         producer_run=producer_run,
+        record_usage=bool(settings.openrouter_reasoning_effort) and settings.model_provider.lower() == "openrouter",
     )
     if not settings.fallback_model_name:
         return primary
@@ -434,7 +484,7 @@ def build_inference_client(
         raise ConfigError(
             "fallback_base_url must be configured to construct the fallback route"
         )
-    fb_routing, fb_extra = _route_extras(settings.fallback_provider, settings)
+    fb_routing, fb_extra = _route_extras(settings.fallback_provider, settings, fallback=True)
     fallback = OpenAICompatibleInferenceClient(
         settings.fallback_base_url,
         settings._fallback_api_key,
@@ -444,6 +494,7 @@ def build_inference_client(
         extra_body=fb_extra,
         event_sink=event_sink,
         producer_run=producer_run,
+        record_usage=bool(settings.openrouter_reasoning_effort) and settings.fallback_provider.lower() == "openrouter",
     )
     return RoutedInferenceClient(
         primary,
@@ -453,3 +504,33 @@ def build_inference_client(
         event_sink=event_sink,
         producer_run=producer_run,
     )
+
+
+def build_quality_inference_client(
+    settings: Settings, *, event_sink: EventSink | None = None, producer_run: str = ""
+) -> OpenAICompatibleInferenceClient | RoutedInferenceClient:
+    """Trusted operator-selected quality model, with the same bounded failover.
+
+    Swapping the whole route preserves credentials and endpoint restrictions;
+    task text and model output cannot choose or weaken the quality route.
+    """
+    if settings.quality_model_route == "fallback":
+        if not settings.fallback_model_name:
+            raise ConfigError("quality_model_route=fallback requires a configured fallback route")
+        settings = replace(
+            settings,
+            model_provider=settings.fallback_provider,
+            model_name=settings.fallback_model_name,
+            provider_base_url=settings.fallback_base_url,
+            provider_api_key_env=settings.fallback_api_key_env,
+            provider_only=settings.fallback_provider_only,
+            _api_key=settings._fallback_api_key,
+            fallback_provider=settings.model_provider,
+            fallback_model_name=settings.model_name,
+            fallback_base_url=settings.provider_base_url,
+            fallback_api_key_env=settings.provider_api_key_env,
+            fallback_provider_only=settings.provider_only,
+            _fallback_api_key=settings._api_key,
+            quality_model_route="primary",
+        )
+    return build_inference_client(settings, event_sink=event_sink, producer_run=producer_run)

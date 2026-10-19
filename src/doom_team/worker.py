@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from doom_team.config import ConfigError, ConfigLoader
-from doom_team.inference import build_inference_client
+from doom_team.inference import build_inference_client, build_quality_inference_client
 from doom_team.observability import DurableEventSink
 from doom_team.subprocess_guard import run_guarded
 from doom_team.task_runner import ProductionTaskRunner
@@ -100,7 +100,11 @@ def run_attempt(request: TaskAttemptRequest) -> dict[str, Any]:
         producer_run=f"{request.mission_id}/{request.task_id}",
     )
     runner = ProductionTaskRunner(
-        client, validation_commands=resolve_validation_policy(request.validation_policy)
+        client, validation_commands=resolve_validation_policy(request.validation_policy),
+        quality_inference=build_quality_inference_client(
+            settings, event_sink=sink,
+            producer_run=f"{request.mission_id}/{request.task_id}/quality",
+        ) if settings.quality_model_route == "fallback" else None,
     )
     result = runner.run_task(
         request.task,

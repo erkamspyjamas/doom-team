@@ -37,6 +37,7 @@ _SAFE_AGENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$")
 # silently becoming another profile. "max" is the rc1 historical behavior.
 NVIDIA_REASONING_EFFORTS = ("max", "high", "none")
 DEFAULT_NVIDIA_REASONING_EFFORT = "max"
+OPENROUTER_REASONING_EFFORTS = ("low", "high", "max")
 
 
 def _env_name(setting: str) -> str:
@@ -86,6 +87,14 @@ class Settings:
     # request profile of a route whose provider is nvidia; OpenRouter and any
     # other provider never see it. Default preserves rc1 behavior exactly.
     nvidia_reasoning_effort: str = DEFAULT_NVIDIA_REASONING_EFFORT
+    # Empty preserves the legacy OpenRouter payload. Explicit reasoning is
+    # enabled independently of NVIDIA, for primary and fallback routes alike.
+    openrouter_reasoning_effort: str = ""
+    openrouter_max_tokens: int = 65536
+    openrouter_json_mode: bool = False
+    provider_only: tuple[str, ...] = ()
+    fallback_provider_only: tuple[str, ...] = ()
+    quality_model_route: str = "primary"
     # Optional single fallback inference route (provider availability only).
     # Configured as a unit: naming any fallback field requires all of them,
     # with its own independent credential. Empty means no Doom Team fallback.
@@ -136,6 +145,12 @@ class Settings:
             f"request_timeout={self.request_timeout} "
             f"provider_base_url={self.provider_base_url} "
             f"nvidia_reasoning_effort={self.nvidia_reasoning_effort} "
+            f"openrouter_reasoning_effort={self.openrouter_reasoning_effort} "
+            f"openrouter_max_tokens={self.openrouter_max_tokens} "
+            f"openrouter_json_mode={self.openrouter_json_mode} "
+            f"provider_only={self.provider_only} "
+            f"fallback_provider_only={self.fallback_provider_only} "
+            f"quality_model_route={self.quality_model_route} "
             f"fallback_provider={self.fallback_provider} "
             f"fallback_model_name={self.fallback_model_name} "
             f"fallback_base_url={self.fallback_base_url} "
@@ -162,6 +177,12 @@ class Settings:
             "gas_city_agent": self.gas_city_agent,
             "provider_base_url": self.provider_base_url,
             "nvidia_reasoning_effort": self.nvidia_reasoning_effort,
+            "openrouter_reasoning_effort": self.openrouter_reasoning_effort,
+            "openrouter_max_tokens": self.openrouter_max_tokens,
+            "openrouter_json_mode": self.openrouter_json_mode,
+            "provider_only": list(self.provider_only),
+            "fallback_provider_only": list(self.fallback_provider_only),
+            "quality_model_route": self.quality_model_route,
             "fallback_provider": self.fallback_provider,
             "fallback_model_name": self.fallback_model_name,
             "fallback_base_url": self.fallback_base_url,
@@ -201,6 +222,12 @@ class ConfigLoader:
         request_timeout: float | None = None,
         provider_base_url: str | None = None,
         nvidia_reasoning_effort: str | None = None,
+        openrouter_reasoning_effort: str | None = None,
+        openrouter_max_tokens: int | None = None,
+        openrouter_json_mode: bool | None = None,
+        provider_only: str | None = None,
+        fallback_provider_only: str | None = None,
+        quality_model_route: str | None = None,
         fallback_provider: str | None = None,
         fallback_model_name: str | None = None,
         fallback_base_url: str | None = None,
@@ -414,6 +441,60 @@ class ConfigLoader:
                 f"{', '.join(NVIDIA_REASONING_EFFORTS)}: got {effort!r}"
             )
 
+        router_effort_raw: Any = openrouter_reasoning_effort
+        if router_effort_raw is None:
+            router_effort_raw = env_value("openrouter_reasoning_effort")
+        if router_effort_raw is None:
+            router_effort_raw = file_values.get("openrouter_reasoning_effort", "")
+        router_effort = str(router_effort_raw)
+        if router_effort and router_effort not in OPENROUTER_REASONING_EFFORTS:
+            raise ConfigError("openrouter_reasoning_effort must be low, high, or max when set")
+
+        router_tokens_raw: Any = openrouter_max_tokens
+        if router_tokens_raw is None:
+            router_tokens_raw = env_value("openrouter_max_tokens")
+        if router_tokens_raw is None:
+            router_tokens_raw = file_values.get("openrouter_max_tokens", 65536)
+        if isinstance(router_tokens_raw, str):
+            router_tokens_raw = _parse_int(router_tokens_raw)
+        if type(router_tokens_raw) is not int or not 1024 <= router_tokens_raw <= 262144:
+            raise ConfigError("openrouter_max_tokens must be an integer between 1024 and 262144")
+
+        router_json_raw: Any = openrouter_json_mode
+        if router_json_raw is None:
+            router_json_raw = env_value("openrouter_json_mode")
+        if router_json_raw is None:
+            router_json_raw = file_values.get("openrouter_json_mode", False)
+        if isinstance(router_json_raw, str):
+            if router_json_raw.lower() not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+                raise ConfigError("openrouter_json_mode must be a boolean")
+            router_json_raw = _parse_bool(router_json_raw)
+        if not isinstance(router_json_raw, bool):
+            raise ConfigError("openrouter_json_mode must be a boolean")
+
+        def endpoint_only(value: str | None, name: str) -> tuple[str, ...]:
+            raw: Any = value
+            if raw is None:
+                raw = env_value(name)
+            if raw is None:
+                raw = file_values.get(name, ())
+            if isinstance(raw, str):
+                parts = _split_csv(raw)
+            elif isinstance(raw, (list, tuple)) and all(isinstance(p, str) for p in raw):
+                parts = tuple(p.strip() for p in raw)
+            else:
+                raise ConfigError(f"{name} must be a CSV string or list of endpoint names")
+            if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", part) for part in parts):
+                raise ConfigError(f"{name} contains an invalid endpoint name")
+            return parts
+
+        only = endpoint_only(provider_only, "provider_only")
+        fb_only = endpoint_only(fallback_provider_only, "fallback_provider_only")
+        quality_route = str(quality_model_route or env_value("quality_model_route")
+                            or file_values.get("quality_model_route") or "primary")
+        if quality_route not in ("primary", "fallback"):
+            raise ConfigError("quality_model_route must be primary or fallback")
+
         fb_provider = str(
             fallback_provider
             or env_value("fallback_provider")
@@ -440,6 +521,8 @@ class ConfigLoader:
         ).strip()
         fb_api_key = ""
         fallback_fields = (fb_provider, fb_model, fb_base_url, fb_key_env)
+        if not any(fallback_fields) and (fb_only or quality_route == "fallback"):
+            raise ConfigError("fallback endpoint selection and quality routing require a fallback route")
         if any(fallback_fields):
             # The fallback route is configured as a unit and fails closed: a
             # half-configured fallback discovered mid-mission would either
@@ -495,6 +578,12 @@ class ConfigLoader:
             request_timeout=float(timeout),
             provider_base_url=base_url_value,
             nvidia_reasoning_effort=effort,
+            openrouter_reasoning_effort=router_effort,
+            openrouter_max_tokens=router_tokens_raw,
+            openrouter_json_mode=router_json_raw,
+            provider_only=only,
+            fallback_provider_only=fb_only,
+            quality_model_route=quality_route,
             fallback_provider=fb_provider,
             fallback_model_name=fb_model,
             fallback_base_url=fb_base_url,

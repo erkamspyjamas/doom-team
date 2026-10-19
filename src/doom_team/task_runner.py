@@ -367,10 +367,12 @@ class ProductionTaskRunner:
         inference: InferencePort,
         *,
         validation_commands: tuple[ValidationCommand, ...] | list[ValidationCommand],
+        quality_inference: InferencePort | None = None,
     ) -> None:
         if not validation_commands:
             raise TaskRunnerError("a task runner requires at least one validation command")
         self._inference = inference
+        self._quality_inference = quality_inference if quality_inference is not None else inference
         self._validation_commands = tuple(validation_commands)
 
     def run_task(
@@ -554,7 +556,7 @@ class ProductionTaskRunner:
         try:
             qa_verdict = _parse_role_verdict(
                 _response_content(
-                    self._inference.complete(
+                    self._quality_inference.complete(
                         [
                             {
                                 "role": "system",
@@ -601,7 +603,7 @@ class ProductionTaskRunner:
         try:
             reviewer_verdict = _parse_role_verdict(
                 _response_content(
-                    self._inference.complete(
+                    self._quality_inference.complete(
                         [
                             {
                                 "role": "system",
