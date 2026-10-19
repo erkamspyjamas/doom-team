@@ -42,31 +42,102 @@ Each line is a single JSON object with the following shape:
 | `APPROVAL_RECORDED` / `APPROVAL_DENIED` / `APPROVAL_ERROR` | `approval` | Human approval decisions and failures |
 | `SERVICE_STARTED` / `SERVICE_STOPPED` | `system` | Process lifecycle |
 
-### Filtered event queries
+### Filtered event queries: `EventHistory.query`
 
-`EventHistory.query` returns the last matching events in durable append order without modifying the log:
+`EventHistory.query` is a read-only, in-process API that returns a task's recent
+events as parsed `Event` objects, so operators and diagnostics do not have to
+read or parse `events.jsonl` themselves. The existing summaries
+(`active_tasks()`, `recent_errors()`, `last_events()`) are unchanged and remain
+what `doom-team status` prints.
+
+Signature (all arguments are keyword-only):
+
+```python
+EventHistory.query(
+    *,
+    limit: int = 10,
+    kinds: Sequence[str] | None = None,
+    task_id: str | None = None,
+    producer_role: str | None = None,
+) -> list[Event]
+```
+
+`Sequence` here means a `list` or a `tuple`.
+
+#### Usage example
 
 ```python
 from doom_team.observability import DurableEventSink, EventHistory
 
 history = EventHistory(DurableEventSink("<state_dir>"))
+
+# Last 5 TASK_STARTED/TASK_FAILED events for task-a produced by dev.
 events = history.query(
     limit=5,
     kinds=("TASK_STARTED", "TASK_FAILED"),
     task_id="task-a",
     producer_role="dev",
 )
+for event in events:
+    print(event.timestamp.isoformat(), event.kind, event.details.get("task_id"))
+
+# Defaults: the last 10 events of any kind from any producer.
+recent = history.query()
+
+# An empty kind sequence matches nothing, so this returns [].
+nothing = history.query(kinds=[])
 ```
 
-Constraints:
+#### Filters
 
-- All arguments are keyword-only. `limit` defaults to 10 and must be a nonnegative `int`; `bool` is rejected.
-- `kinds` must be `None`, a list, or a tuple of nonempty strings. Matching is exact and case-sensitive; an empty list or tuple matches nothing. Duplicate kinds do not duplicate results.
-- `task_id` matches an exact nonempty string in `details["task_id"]`; missing or non-string values do not match.
-- `producer_role` matches `Event.producer_role` exactly.
-- Filters compose with AND. The limit is applied after filtering, so it selects the last N matching events in append order.
-- Results are not sorted by timestamp; append order wins even when timestamps tie or move backward.
-- Querying is read-only: it does not rewrite `events.jsonl`, and reopening the durable sink returns the same results.
+Filters are optional and combine with AND; omitting one (`None`) imposes no
+constraint on that field.
+
+| Argument | Matches | Notes |
+|----------|---------|-------|
+| `kinds` | Exact, case-sensitive membership in `Event.kind` | `None` = no kind filter. An empty list/tuple matches nothing. Duplicate kinds are allowed and never duplicate results. |
+| `task_id` | Exact, nonempty string in `details["task_id"]` | Events whose details have no `task_id`, or a non-string `task_id`, do not match. |
+| `producer_role` | Exact `Event.producer_role` | `None` = no producer filter. |
+
+Matching never trims, case-folds, or normalizes: a whitespace-only `task_id` is
+a valid value and matches only that exact string. `kinds` values such as
+`"task_started"` do not match `TASK_STARTED`.
+
+#### Selection and ordering
+
+- The limit is applied **after** filtering: `query(limit=5, ...)` returns the
+  last 5 events that match, not the matches that happen to fall inside the last
+  5 events.
+- Results keep their original durable append order (oldest first within the
+  returned window). They are never sorted by timestamp, so tied or
+  non-monotonic UTC timestamps do not change the answer — append order wins.
+- `limit` defaults to 10. `limit=0` returns `[]`. A `limit` larger than the
+  match count returns every match.
+
+#### Validation
+
+Arguments are validated before the log is read, so the same errors are raised
+with `limit=0` and when the event log is empty or absent.
+
+| Argument | `TypeError` | `ValueError` |
+|----------|-------------|--------------|
+| `limit` | Not an `int`, or a `bool` | Negative |
+| `kinds` | Not `None`/`list`/`tuple` (a bare `str`, `bytes`, `dict`, `set`, `int`, ...), or an item that is not a `str` | An item that is the empty string |
+| `task_id` | Not `None` and not a `str` | The empty string |
+| `producer_role` | Not `None` and not a `str` | The empty string |
+
+#### Read-only behavior and reopen
+
+Querying is read-only: it does not append, rewrite, compact, or reorder
+`events.jsonl`, and it creates no files or directories. Repeated calls against
+the same state return identical results, and reopening the durable sink (for
+example in a later process) reads the same bytes and yields the same events.
+
+#### No CLI command
+
+There is no CLI subcommand for filtered queries; the API above is the supported
+interface. `doom-team status` continues to print the built-in summaries, and
+`doom-team usage` reports provider usage aggregates.
 
 ## Redaction
 
@@ -88,6 +159,9 @@ Use the `doom-team status` command to see:
 - Active tasks (started but not completed)
 - Recent errors (provider, approval, task failures)
 - Last events
+
+For a narrower, filtered view of a single task's recent events, call
+`EventHistory.query` from Python as shown above; no CLI command exposes it.
 
 ## Retention
 
