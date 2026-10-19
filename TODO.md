@@ -11,6 +11,17 @@ starting. Preserve failures and do not assist a generated candidate mid-run.
 
 ## P0 — Finish the current baseline
 
+- [ ] **PLAN-01 — Disclose enforced planner bounds.** The PocketLedger
+  showcase failed before mission creation because a criterion exceeded
+  500 characters; the planner system profile did not disclose that bound.
+  Generate planning guidance from the actual enforced defaults/configuration,
+  including description/dependency/task/criterion limits. Retain rejection of
+  invalid plans; do not raise limits, silently truncate criteria, add retries
+  or change provider/approval policy to manufacture a pass. Verify default
+  and custom-config prompt alignment and boundary behavior, then run relevant
+  quality and installed-runtime regression gates. Failure evidence:
+  `pilots/doom-team-showcase-pocketledger-20261019/VERIFICATION.md`.
+
 - [x] **BASE-01 — Complete RC9 installed baseline.** Run all 750 tests through
   the offline installed-candidate validator against immutable RC9, including
   real wheel build/install. Done when every stage passes, all snapshot inputs
@@ -46,6 +57,17 @@ new paid pilot was started.
   unchanged RC10/RC11/RC12 tags against remote refs; do not deploy or move old tags.
 
 ## P1 — Broaden real-work evidence
+
+- [ ] **SHOW-01 — Complete the medium PocketLedger project showcase.**
+  Initial run failed at planning (one call, known USD 0.00550958, no mission
+  or implementation). After PLAN-01 validation and fresh run authorization,
+  retain the exact project objective and external acceptance from
+  `pilots/doom-team-showcase-pocketledger-20261019/`; use a fresh destination
+  and state. Done only at the normal human-review boundary with all internal
+  and independent HTTP/persistence/CSV/static-contract/Ruff/strict-mypy/pytest
+  gates passed. Preserve initial failure and costs; no easier replacement,
+  in-run assistance or general perfect-system claim. Browser click/visual
+  testing is not covered by the frozen external harness.
 
 The following three cases use fresh destinations/state and new external
 acceptance criteria. They are separate from the frozen benchmark. Retain

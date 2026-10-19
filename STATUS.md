@@ -28,6 +28,14 @@ remain unpublished until separately authorized. Inspect them with `git log -1`,
 
 ## Demonstrated behavior
 
+- The medium greenfield PocketLedger showcase failed before mission creation.
+  Its first task contained an acceptance criterion exceeding the enforced
+  500-character bound; this bound was absent from the planner system profile.
+  One provider call completed normally (known USD 0.00550958), but no task,
+  candidate or external delivery check ran. This is an end-to-end failure,
+  not a successful project or provider outage. Preserve it alongside the
+  earlier successful bounded cases; see `PLAN-01` and `SHOW-01` in TODO.
+
 - RES-01 completed a real SIGKILL/new-process resume on its third exercise.
   Both dependent fixture tasks integrated in three attempts; the completed
   task was unchanged, the interrupted attempt retained, retry budgets and
@@ -85,6 +93,10 @@ benchmark, a ten-case holdout, or a general real-repository reliability rate.
 
 ## Current limits
 
+- Planner parsing enforces size/count bounds that are not all disclosed in
+  its prompt. PocketLedger was blocked at this boundary; prompt/validator
+  alignment is the immediate functional follow-up (`PLAN-01`). The raw failed
+  plan was not retained, so its exact criterion text/length is unavailable.
 - The active MissionRunner executes ready tasks serially. Capability routing
   does not imply concurrent execution; the parallel target is `PAR-01`.
 - Context selection is a deterministic task-focused heuristic. Only complete
@@ -109,6 +121,7 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| PocketLedger initial showcase | `pilots/doom-team-showcase-pocketledger-20261019/VERIFICATION.md` | Failed before mission creation: overlong planner criterion; original result/cost preserved, no delivery claim |
 | RES-01 first exercise | `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md` | Actual process recovery passed; overall blocked by operator fixture/preflight error; retained unchanged |
 | RES-01 second exercise | `pilots/doom-team-res01-process-resume-v2-20261019/VERIFICATION.md` | Corrected fixture gates passed; retained external observer initialization-race failure, not a demonstrated model plan failure |
 | RES-01 successful third exercise | `pilots/doom-team-res01-process-resume-v3-20261019/VERIFICATION.md` | Actual SIGKILL/resume, unchanged completed task/budgets, terminal no-op and all final gates passed; prior failures retained |
