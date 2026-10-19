@@ -8,9 +8,9 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc13`, `0a69725dbe355aa58e1acb75597a18d7a05f8992`; user-authorized planner prompt/validation-bound alignment, verified offline |
-| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11/RC12/RC13 publication pending |
-| Documentation | This status/work-list update follows the immutable RC13 runtime tag |
+| Local runtime baseline | `v0.1.0-rc14`, `5f090e7fd52b73effee769175e4274a4217b4ad0`; trusted task/final Python quality profile, verified offline |
+| Latest verified GitHub publication | Main `557af9986585420330992e737d6a791dd02258ec`; RC10–RC13 published and verified, RC13 `0a69725dbe355aa58e1acb75597a18d7a05f8992`; local RC14 publication pending |
+| Documentation | This status/work-list update follows the immutable RC14 runtime tag |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
@@ -18,6 +18,7 @@ changes the runtime, its validation or a work item's status.
 | RC11 installed validation | 799 external installed tests and 799 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | RC12 installed validation | 2272 external checks, 853 external installed tests and 853 fresh final installed tests passed; real wheel builds/installs, Ruff and strict mypy passed |
 | RC13 installed validation | 863 tests passed after real offline wheel build/install; 42 targeted planner tests, Ruff and strict mypy passed; parser limits and policies unchanged |
+| RC14 installed validation | 883 tests passed after real offline wheel build/install; 20 quality-policy regressions, 199 affected tests, actual Ruff/mypy positive/negative probes and source quality passed |
 | Models | DeepSeek V4.1 Flash planner/author; independent GLM 5.3 Flash QA/Reviewer; high reasoning |
 
 The installed CLI uses the current local checkout through its editable
@@ -25,9 +26,22 @@ installation. Publication state and the runtime baseline are listed separately
 so local changes are distinguished from verified GitHub refs. Publication
 records below describe their recorded remote snapshots; newer local releases
 remain unpublished until separately authorized. Inspect them with `git log -1`,
-`git show v0.1.0-rc13 --stat` and `git ls-remote origin`.
+`git show v0.1.0-rc14 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
+
+- QUAL-01 fixed the task/final validation-policy mismatch exposed by
+  PocketLedger V2. The optional trusted `python-quality` profile executes
+  compile, pytest, Ruff and strict mypy before task QA/Reviewer and on fresh
+  final validation. Worker/mission fingerprints prevent changing quality
+  commands/target on worker dispatch or resume. Default policy is unchanged.
+  Twenty regressions, 199 affected tests and real-tool positive/negative
+  proofs passed. An initial full run found two new settings missing from
+  CONFIGURATION documentation (882 passed, one failed); after adding them,
+  a fresh offline wheel build/install and all 883 tests passed. V2 was stopped
+  by user authorization with zero integrations, known USD 0.02202305 plus
+  possible unreported interrupted-call charge. Its original history remains
+  unchanged. Fresh same-contract V3 is preregistered; outcome pending.
 
 - PLAN-01 fixed the PocketLedger planning blocker's undisclosed size limits.
   RC13 renders the prompt from actual configured task/description/dependency
@@ -35,8 +49,8 @@ remain unpublished until separately authorized. Inspect them with `git log -1`,
   remain unchanged: overlong criteria still fail closed. Two new prompt
   regressions failed before the fix; all 42 targeted tests and all 863
   installed product tests pass afterward, with real offline wheel build/install,
-  Ruff and strict mypy. The identical PocketLedger repeat is preregistered
-  under `pilots/doom-team-showcase-pocketledger-v2-20261019/`; outcome pending.
+  Ruff and strict mypy. The PocketLedger V2 repeat passed planning but was later stopped on the
+  separate quality-policy mismatch; see QUAL-01 and the retained V2 report.
 
 - The medium greenfield PocketLedger showcase failed before mission creation.
   Its first task contained an acceptance criterion exceeding the enforced
@@ -132,6 +146,9 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| QUAL-01 / RC14 fix | `pilots/doom-team-quality-policy-fix-20261019/REPORT.md` | Real four-stage task/final quality evidence, drift protection, preserved documentation gate failure and final 883 installed passes |
+| PocketLedger V2 stop | `pilots/doom-team-showcase-pocketledger-v2-20261019/VERIFICATION.md` | Planned five tasks; first candidate passed compile/58 tests/QA but Reviewer lacked quality evidence; operator-authorized stop, old attempts preserved |
+| PocketLedger V3 preregistration | `pilots/doom-team-showcase-pocketledger-v3-20261019/README.md` | Identical objective/acceptance, new trusted quality policy, fresh state/destination; result pending |
 | PLAN-01 / RC13 fix | `pilots/doom-team-plan01-bounds-fix-20261019/REPORT.md` | Default/custom prompt bounds, unchanged parser limits, 42 targeted tests and 863 installed tests, offline build/install and quality passed |
 | PocketLedger initial showcase | `pilots/doom-team-showcase-pocketledger-20261019/VERIFICATION.md` | Failed before mission creation: overlong planner criterion; original result/cost preserved, no delivery claim |
 | RES-01 first exercise | `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md` | Actual process recovery passed; overall blocked by operator fixture/preflight error; retained unchanged |

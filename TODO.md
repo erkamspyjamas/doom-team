@@ -11,6 +11,15 @@ starting. Preserve failures and do not assist a generated candidate mid-run.
 
 ## P0 — Finish the current baseline
 
+- [x] **QUAL-01 — Execute required quality gates before review.** Local
+  RC14 adds trusted optional python-quality/pocketledger target configuration,
+  actual Ruff/strict-mypy commands in worker/task and fresh final validation,
+  and pinned quality-command fingerprints for worker/resume consistency.
+  Default compile/pytest policy remains unchanged. Twenty regressions,
+  199 affected tests, real-tool pass/fail probes, source quality and all
+  883 installed tests passed after documenting the two new settings. Both
+  full-run outcomes remain in `pilots/doom-team-quality-policy-fix-20261019/`.
+
 - [x] **PLAN-01 — Disclose enforced planner bounds.** Fixed as local RC13
   `0a69725dbe355aa58e1acb75597a18d7a05f8992`: generate system guidance from
   actual PlannerConfig plus existing criterion/identifier constants. Parser
@@ -50,9 +59,15 @@ This publication-status follow-up is documentation-only; its exact commit and
 remote verification are recorded in that operation report. No deployment or
 new paid pilot was started.
 
-- [ ] **REL-03 — Publish verified RC10/RC11/RC12/RC13 and follow-up status.** Requires a
-  separate explicit push authorization. Verify a normal main push and the
-  unchanged RC10/RC11/RC12/RC13 tags against remote refs; do not deploy or move old tags.
+- [x] **REL-03 — Publish verified RC10/RC11/RC12/RC13 and follow-up status.**
+  Explicitly authorized atomic normal push published 15 main commits through
+  557af9986585420330992e737d6a791dd02258ec and unchanged RC10–RC13 tags.
+  Independent remote refs verified; no deployment. Evidence:
+  `pilots/doom-team-rc13-push-20261019/REPORT.md`. Status editing was deferred
+  until V2 stopped to preserve its source fingerprint.
+- [ ] **REL-04 — Publish verified RC14 quality-policy fix and documentation.**
+  Requires explicit push authorization; normal fast-forward main and new
+  unchanged RC14 tag only, independent remote verification, no deployment.
 
 ## P1 — Broaden real-work evidence
 
@@ -66,10 +81,13 @@ new paid pilot was started.
   gates passed. Preserve initial failure and costs; no easier replacement,
   in-run assistance or general perfect-system claim. Browser click/visual
   testing is not covered by the frozen external harness.
-  User authorized the fix and repeat; fresh V2 is preregistered at
-  `pilots/doom-team-showcase-pocketledger-v2-20261019/`, with byte-identical
-  objective/acceptance and unchanged selected high-reasoning model profile.
-  Leave SHOW-01 open until its own complete outcome is verified.
+  V2 passed planning but its first candidate was reviewer-blocked for
+  missing executed Ruff/mypy evidence (compile/58 tests/QA passed). User
+  authorized stop/fix/restart; V2 attempts and known USD 0.02202305 plus
+  unknown interrupted charge remain preserved. After QUAL-01 validation,
+  fresh V3 is preregistered at `pilots/doom-team-showcase-pocketledger-v3-20261019/`,
+  with byte-identical objective/acceptance and unchanged selected models/high
+  reasoning. Leave SHOW-01 open until its complete outcome is verified.
 
 The following three cases use fresh destinations/state and new external
 acceptance criteria. They are separate from the frozen benchmark. Retain
