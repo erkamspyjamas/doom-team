@@ -41,9 +41,9 @@ This publication-status follow-up is documentation-only; its exact commit and
 remote verification are recorded in that operation report. No deployment or
 new paid pilot was started.
 
-- [ ] **REL-03 — Publish approved RC10 and follow-up status.** Requires a
+- [ ] **REL-03 — Publish approved RC10/RC11 and follow-up status.** Requires a
   separate explicit push authorization. Verify a normal main push and the
-  unchanged RC10 tag against remote refs; do not deploy or move old tags.
+  unchanged RC10/RC11 tags against remote refs; do not deploy or move old tags.
 
 ## P1 — Broaden real-work evidence
 
@@ -56,23 +56,31 @@ only the cases that passed.
 - [x] **PROOF-01 — Bug fix in an existing repository.** Pre-register a real
   defect, regression and independent acceptance. Done when the mission
   naturally reaches human review and acceptance passes on its exact SHA.
+
 PROOF-01 evidence: `pilots/doom-team-proof01-active-retry-20261019/VERIFICATION.md`;
 55 independent checks, 760 external and 760 fresh final installed tests passed.
 The exact candidate was explicitly approved and integrated as local RC10; see
 `pilots/doom-team-proof01-release-rc10-20261019/REPORT.md`.
 
-- [ ] **PROOF-02 — Feature in an existing module/API.** Require preservation
+- [x] **PROOF-02 — Feature in an existing module/API.** Require preservation
   of existing behavior and explicit API tests. Use the same independent
   acceptance and candidate-identity standard as PROOF-01.
-PROOF-02 is authorized for preparation/execution: add a filtered read-only
-`EventHistory.query` API while preserving existing history methods. The frozen
-objective, independent acceptance and budgets will be retained in
-`pilots/doom-team-proof02-history-query-20261019/`. This item stays open until
-its exact candidate independently passes.
+
+PROOF-02 evidence: `pilots/doom-team-proof02-history-query-20261019/VERIFICATION.md`;
+107 independent checks, 799 external and 799 fresh final installed tests passed.
+Both tasks passed first attempts. The exact candidate was approved/integrated
+as local RC11; see `pilots/doom-team-proof02-release-rc11-20261019/REPORT.md`.
 
 - [ ] **PROOF-03 — Refactor with preserved behavior.** Fix the external
   behavior contract before execution. Done when old behavior and the
   required refactor are independently verified on the candidate.
+
+PROOF-03 is authorized for preparation/execution: extract event-value redaction
+into a focused pure helper while preserving existing behavior. Freeze the old
+implementation as an external differential oracle, plus acceptance and budgets,
+in `pilots/doom-team-proof03-redaction-refactor-20261019/`. Keep the checkbox
+open until exact-candidate independent behavior/structure checks pass.
+
 - [ ] **RES-01 — Actual interruption/resume exercise.** Interrupt a bounded
   real process at a pre-registered point, then resume from durable state.
   Verify preserved plan/retry budgets and provenance, no duplicate task

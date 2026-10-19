@@ -8,23 +8,32 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc10`, `b1669ad5e5f00fbaeda29d3f99ef54c9848ff673`; approved PROOF-01 fix |
-| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10 publication pending |
-| Documentation | This status/work-list update follows the immutable RC10 runtime tag |
+| Local runtime baseline | `v0.1.0-rc11`, `31a19492d8b0b061e0062c651307f261f40190ce`; approved PROOF-02 API feature |
+| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11 publication pending |
+| Documentation | This status/work-list update follows the immutable RC11 runtime tag |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
 | RC10 installed validation | 760 external installed tests and 760 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
+| RC11 installed validation | 799 external installed tests and 799 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | Models | DeepSeek V4.1 Flash planner/author; independent GLM 5.3 Flash QA/Reviewer; high reasoning |
 
 The installed CLI uses the current local checkout through its editable
 installation. Publication state and the runtime baseline are listed separately
-so local changes are distinguished from verified GitHub refs. The publication
-record below also captures this status-only follow-up commit and its remote
-verification. Inspect them
-with `git log -1`, `git show v0.1.0-rc9 --stat` and `git ls-remote origin`.
+so local changes are distinguished from verified GitHub refs. Publication
+records below describe their recorded remote snapshots; newer local releases
+remain unpublished until separately authorized. Inspect them with `git log -1`,
+`git show v0.1.0-rc11 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
+
+- PROOF-02 added `EventHistory.query` with exact conjunctive kind/task/role
+  filters and a limit applied after matching in durable append order. Both
+  tasks passed on first attempts; 107 independent installed API checks,
+  799 external installed tests and 799 fresh final installed tests passed.
+  Known cost USD 0.01770005 for seven calls; no provider errors or operator
+  code edits. The exact candidate was explicitly approved and integrated
+  locally as RC11; existing history behavior remains unchanged.
 
 - PROOF-01 fixed active-task diagnostics hiding running retries/restarts. One
   task passed in one attempt, with 55 independent installed acceptance checks,
@@ -77,6 +86,8 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| PROOF-02 pilot | `pilots/doom-team-proof02-history-query-20261019/VERIFICATION.md` | Exact-SHA API preservation, independent installed acceptance and all outcomes |
+| RC11 approval/integration | `pilots/doom-team-proof02-release-rc11-20261019/REPORT.md` | Explicit approval, exact-SHA fast-forward and immutable local RC11; no push |
 | PROOF-01 pilot | `pilots/doom-team-proof01-active-retry-20261019/VERIFICATION.md` | Baseline defect reproduction, exact-SHA independent acceptance and all outcomes |
 | RC10 approval/integration | `pilots/doom-team-proof01-release-rc10-20261019/REPORT.md` | Explicit human approval, exact-SHA fast-forward, immutable local RC10 tag; no push |
 | RC9 fix | `pilots/doom-team-approval-digest-rc9-20261019/REPORT.md` | 750 editable tests, 53 installed affected tests, preserved canonical approval replay |
