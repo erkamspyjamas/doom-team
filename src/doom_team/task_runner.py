@@ -62,12 +62,11 @@ from doom_team.validation import (
     ValidationResult,
     run_validation_commands,
 )
+from doom_team.workspace_context import build_workspace_context
 
 MAX_OUTPUT_FILES = 16
 MAX_FILE_CONTENT_CHARS = 50_000
 MAX_TOTAL_CONTENT_CHARS = 200_000
-MAX_CONTEXT_FILE_CHARS = 8_000
-MAX_CONTEXT_TOTAL_CHARS = 60_000
 MAX_REVIEW_DIFF_CHARS = 60_000
 
 MARKER_REDACTION = "[REDACTED-DELIMITER]"
@@ -91,7 +90,9 @@ IMPLEMENTER_CONTRACT = (
     'content"}], "summary": "one sentence"}. '
     f"At most {MAX_OUTPUT_FILES} files. Paths are workspace-relative; never "
     "absolute, never containing '..', never under .git. Do not run commands; "
-    "do not describe work you did not include as file content."
+    "do not describe work you did not include as file content. "
+    "Existing files may be rewritten only when their complete contents appear "
+    "in the workspace context. Never reconstruct an omitted file from guesses."
 )
 
 QA_CONTRACT = (
@@ -327,35 +328,6 @@ def _parse_implementer_output(content: str) -> ImplementerOutput:
     )
 
 
-def _workspace_context(workspace: TaskWorkspace) -> str:
-    """Bounded inventory + contents of the tracked workspace files."""
-    from doom_team.deliverable import _git
-
-    names = [
-        line
-        for line in _git(workspace.path, "ls-files").splitlines()
-        if line.strip()
-    ]
-    sections: list[str] = [f"tracked files: {', '.join(names) if names else '(none)'}"]
-    used = 0
-    for name in names:
-        target = workspace.path / name
-        try:
-            raw = target.read_bytes()
-        except OSError:
-            continue
-        if b"\x00" in raw[:8192]:
-            sections.append(f"--- {name} --- (binary, omitted)")
-            continue
-        text = raw.decode("utf-8", errors="replace")[:MAX_CONTEXT_FILE_CHARS]
-        if used + len(text) > MAX_CONTEXT_TOTAL_CHARS:
-            sections.append(f"--- {name} --- (omitted for context budget)")
-            continue
-        used += len(text)
-        sections.append(f"--- {name} ---\n{text}")
-    return "\n".join(sections)
-
-
 def _validation_evidence(results: tuple[ValidationResult, ...]) -> str:
     return json.dumps([result.as_evidence_dict() for result in results], sort_keys=True)
 
@@ -407,6 +379,12 @@ class ProductionTaskRunner:
         # identity of the implementer call.
         implementer_nonce = _new_nonce()
         try:
+            context = build_workspace_context(
+                workspace,
+                query="\n".join((task.id, task.instruction, *task.dependencies)),
+                focus_query="\n".join((task.id, *task.dependencies)),
+                supporting_query="\n".join((*task.acceptance_criteria, dependency_summary, remediation_summary)),
+            )
             implementation = self._inference.complete(
                 [
                     {
@@ -459,7 +437,7 @@ class ProductionTaskRunner:
                                 _untrusted(
                                     implementer_nonce,
                                     "workspace",
-                                    _workspace_context(workspace),
+                                    context.text,
                                 ),
                             ]
                         ),
@@ -470,6 +448,15 @@ class ProductionTaskRunner:
                 _response_content(implementation, "implementer")
             )
             implementation_summary = output.summary
+            # Check the entire response before writing even its first file.
+            # Complete-file output must never replace unseen existing code.
+            for path, _ in output.files:
+                normalized = str(PurePosixPath(path))
+                if normalized in context.tracked_paths and normalized not in context.complete_paths:
+                    raise TaskRunnerError(
+                        f"existing file {normalized} was omitted from workspace context; "
+                        "cannot replace it without complete source"
+                    )
             for path, content in output.files:
                 workspace.write_file(path, content)
             candidate_sha = workspace.commit_candidate(

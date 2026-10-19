@@ -121,3 +121,28 @@ not assume the test file's checkout is the installed runtime. Before a paid
 self-development pilot, run the complete baseline suite both in editable
 mode and through the isolated installed-candidate validator. A failure in
 either mode blocks the pilot before planning or semantic retries begin.
+
+## Task workspace context
+
+The implementer receives task-focused repository context. Task file references
+(including package-relative suffixes) rank first, then filename terms from the
+task identifier and dependency names, then task instruction terms. References and terms from
+acceptance criteria, dependency results and retry feedback rank afterward, so
+a failure's test path cannot displace the task's implementation source.
+Generic test filename prefixes carry no weight. Ties use repository-relative
+path order; file contents never influence ranking.
+
+Files are provided whole, up to 50000 characters per file. The entire workspace
+context, including its bounded inventory and section headers, stays within
+60000 characters. Binary, symlinked, unreadable, oversized and over-budget
+files are explicitly omitted; an oversized inventory reports its own omission
+count. No file prefix is presented as complete source. All of this material
+retains the existing untrusted-data framing.
+
+An existing tracked file can be replaced only if its complete contents were
+provided in that attempt. The entire response is checked before any file is
+written. Unseen-file replacements fail with a named-file diagnostic that can
+inform the next bounded retry. New files remain permitted. This selection is
+a deterministic heuristic, not semantic repository search: a task whose files
+cannot fit the bounds must be narrowed rather than reconstructed from guesses.
+QA, Reviewer, validation, model profiles and human approval gates are unchanged.
