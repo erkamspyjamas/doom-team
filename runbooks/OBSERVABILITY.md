@@ -42,6 +42,32 @@ Each line is a single JSON object with the following shape:
 | `APPROVAL_RECORDED` / `APPROVAL_DENIED` / `APPROVAL_ERROR` | `approval` | Human approval decisions and failures |
 | `SERVICE_STARTED` / `SERVICE_STOPPED` | `system` | Process lifecycle |
 
+### Filtered event queries
+
+`EventHistory.query` returns the last matching events in durable append order without modifying the log:
+
+```python
+from doom_team.observability import DurableEventSink, EventHistory
+
+history = EventHistory(DurableEventSink("<state_dir>"))
+events = history.query(
+    limit=5,
+    kinds=("TASK_STARTED", "TASK_FAILED"),
+    task_id="task-a",
+    producer_role="dev",
+)
+```
+
+Constraints:
+
+- All arguments are keyword-only. `limit` defaults to 10 and must be a nonnegative `int`; `bool` is rejected.
+- `kinds` must be `None`, a list, or a tuple of nonempty strings. Matching is exact and case-sensitive; an empty list or tuple matches nothing. Duplicate kinds do not duplicate results.
+- `task_id` matches an exact nonempty string in `details["task_id"]`; missing or non-string values do not match.
+- `producer_role` matches `Event.producer_role` exactly.
+- Filters compose with AND. The limit is applied after filtering, so it selects the last N matching events in append order.
+- Results are not sorted by timestamp; append order wins even when timestamps tie or move backward.
+- Querying is read-only: it does not rewrite `events.jsonl`, and reopening the durable sink returns the same results.
+
 ## Redaction
 
 Secrets are redacted **at the sink** before persistence. The configured provider API key (and any additional secret values passed to `DurableEventSink`) are replaced with `[REDACTED]` in every string field. Private reasoning contents from inference responses are never recorded; only token counts and provenance are captured.

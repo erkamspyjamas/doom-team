@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -162,6 +163,70 @@ class EventHistory:
 
     def __init__(self, sink: DurableEventSink) -> None:
         self._sink = sink
+
+    def query(
+        self,
+        *,
+        limit: int = 10,
+        kinds: Sequence[str] | None = None,
+        task_id: str | None = None,
+        producer_role: str | None = None,
+    ) -> list[Event]:
+        """Return the last matching events in durable append order.
+
+        Filters are optional and conjunctive. ``kinds`` is an exact,
+        case-sensitive membership test; ``task_id`` compares against the
+        exact string stored in ``details["task_id"]``; ``producer_role``
+        compares against ``Event.producer_role``. The limit is applied after
+        filtering, so it selects the last ``limit`` matching events without
+        reordering the durable log.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an int")
+        if limit < 0:
+            raise ValueError("limit must be nonnegative")
+
+        kind_filter: frozenset[str] | None
+        if kinds is None:
+            kind_filter = None
+        else:
+            if not isinstance(kinds, (list, tuple)):
+                raise TypeError("kinds must be a list or tuple of strings")
+            validated: list[str] = []
+            for kind in kinds:
+                if not isinstance(kind, str):
+                    raise TypeError("kinds entries must be strings")
+                if not kind:
+                    raise ValueError("kinds entries must be nonempty strings")
+                validated.append(kind)
+            kind_filter = frozenset(validated)
+
+        if task_id is not None:
+            if not isinstance(task_id, str):
+                raise TypeError("task_id must be a string or None")
+            if not task_id:
+                raise ValueError("task_id must be a nonempty string")
+        if producer_role is not None:
+            if not isinstance(producer_role, str):
+                raise TypeError("producer_role must be a string or None")
+            if not producer_role:
+                raise ValueError("producer_role must be a nonempty string")
+
+        if limit == 0:
+            return []
+
+        matches: list[Event] = []
+        for event in self._sink.load():
+            if kind_filter is not None and event.kind not in kind_filter:
+                continue
+            if task_id is not None:
+                stored_task_id = event.details.get("task_id")
+                if not isinstance(stored_task_id, str) or stored_task_id != task_id:
+                    continue
+            if producer_role is not None and event.producer_role != producer_role:
+                continue
+            matches.append(event)
+        return matches[-limit:]
 
     def recent(self, limit: int = 10) -> list[Event]:
         events = self._sink.load()
