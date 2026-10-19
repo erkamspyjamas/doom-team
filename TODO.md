@@ -11,16 +11,14 @@ starting. Preserve failures and do not assist a generated candidate mid-run.
 
 ## P0 — Finish the current baseline
 
-- [ ] **PLAN-01 — Disclose enforced planner bounds.** The PocketLedger
-  showcase failed before mission creation because a criterion exceeded
-  500 characters; the planner system profile did not disclose that bound.
-  Generate planning guidance from the actual enforced defaults/configuration,
-  including description/dependency/task/criterion limits. Retain rejection of
-  invalid plans; do not raise limits, silently truncate criteria, add retries
-  or change provider/approval policy to manufacture a pass. Verify default
-  and custom-config prompt alignment and boundary behavior, then run relevant
-  quality and installed-runtime regression gates. Failure evidence:
-  `pilots/doom-team-showcase-pocketledger-20261019/VERIFICATION.md`.
+- [x] **PLAN-01 — Disclose enforced planner bounds.** Fixed as local RC13
+  `0a69725dbe355aa58e1acb75597a18d7a05f8992`: generate system guidance from
+  actual PlannerConfig plus existing criterion/identifier constants. Parser
+  methods, numerical limits, providers, retries and approval policy unchanged.
+  Before-fix prompt regressions reproduced; all 42 planner tests pass, including
+  custom configs and 500/501-character rejection boundary. Real offline wheel
+  build/install and the full 863-test installed suite, Ruff and strict mypy
+  passed. Evidence: `pilots/doom-team-plan01-bounds-fix-20261019/REPORT.md`.
 
 - [x] **BASE-01 — Complete RC9 installed baseline.** Run all 750 tests through
   the offline installed-candidate validator against immutable RC9, including
@@ -52,9 +50,9 @@ This publication-status follow-up is documentation-only; its exact commit and
 remote verification are recorded in that operation report. No deployment or
 new paid pilot was started.
 
-- [ ] **REL-03 — Publish approved RC10/RC11/RC12 and follow-up status.** Requires a
+- [ ] **REL-03 — Publish verified RC10/RC11/RC12/RC13 and follow-up status.** Requires a
   separate explicit push authorization. Verify a normal main push and the
-  unchanged RC10/RC11/RC12 tags against remote refs; do not deploy or move old tags.
+  unchanged RC10/RC11/RC12/RC13 tags against remote refs; do not deploy or move old tags.
 
 ## P1 — Broaden real-work evidence
 
@@ -68,6 +66,10 @@ new paid pilot was started.
   gates passed. Preserve initial failure and costs; no easier replacement,
   in-run assistance or general perfect-system claim. Browser click/visual
   testing is not covered by the frozen external harness.
+  User authorized the fix and repeat; fresh V2 is preregistered at
+  `pilots/doom-team-showcase-pocketledger-v2-20261019/`, with byte-identical
+  objective/acceptance and unchanged selected high-reasoning model profile.
+  Leave SHOW-01 open until its own complete outcome is verified.
 
 The following three cases use fresh destinations/state and new external
 acceptance criteria. They are separate from the frozen benchmark. Retain

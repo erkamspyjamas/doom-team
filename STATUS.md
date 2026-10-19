@@ -8,15 +8,16 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc12`, `8ebee8a785fd139d5574a159a2edc90a2b288613`; approved complete PROOF-03 refactor/fix |
-| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11/RC12 publication pending |
-| Documentation | This status/work-list update follows the immutable RC12 runtime tag |
+| Local runtime baseline | `v0.1.0-rc13`, `0a69725dbe355aa58e1acb75597a18d7a05f8992`; user-authorized planner prompt/validation-bound alignment, verified offline |
+| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11/RC12/RC13 publication pending |
+| Documentation | This status/work-list update follows the immutable RC13 runtime tag |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
 | RC10 installed validation | 760 external installed tests and 760 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | RC11 installed validation | 799 external installed tests and 799 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | RC12 installed validation | 2272 external checks, 853 external installed tests and 853 fresh final installed tests passed; real wheel builds/installs, Ruff and strict mypy passed |
+| RC13 installed validation | 863 tests passed after real offline wheel build/install; 42 targeted planner tests, Ruff and strict mypy passed; parser limits and policies unchanged |
 | Models | DeepSeek V4.1 Flash planner/author; independent GLM 5.3 Flash QA/Reviewer; high reasoning |
 
 The installed CLI uses the current local checkout through its editable
@@ -24,9 +25,18 @@ installation. Publication state and the runtime baseline are listed separately
 so local changes are distinguished from verified GitHub refs. Publication
 records below describe their recorded remote snapshots; newer local releases
 remain unpublished until separately authorized. Inspect them with `git log -1`,
-`git show v0.1.0-rc12 --stat` and `git ls-remote origin`.
+`git show v0.1.0-rc13 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
+
+- PLAN-01 fixed the PocketLedger planning blocker's undisclosed size limits.
+  RC13 renders the prompt from actual configured task/description/dependency
+  limits and existing criterion/identifier constants. Parsing and limits
+  remain unchanged: overlong criteria still fail closed. Two new prompt
+  regressions failed before the fix; all 42 targeted tests and all 863
+  installed product tests pass afterward, with real offline wheel build/install,
+  Ruff and strict mypy. The identical PocketLedger repeat is preregistered
+  under `pilots/doom-team-showcase-pocketledger-v2-20261019/`; outcome pending.
 
 - The medium greenfield PocketLedger showcase failed before mission creation.
   Its first task contained an acceptance criterion exceeding the enforced
@@ -93,10 +103,11 @@ benchmark, a ten-case holdout, or a general real-repository reliability rate.
 
 ## Current limits
 
-- Planner parsing enforces size/count bounds that are not all disclosed in
-  its prompt. PocketLedger was blocked at this boundary; prompt/validator
-  alignment is the immediate functional follow-up (`PLAN-01`). The raw failed
-  plan was not retained, so its exact criterion text/length is unavailable.
+- RC13 discloses planner bounds but still rejects invalid responses without
+  silent truncation or added semantic retries. Model compliance must be
+  measured by the fresh showcase (`SHOW-01`); prompt alignment alone does
+  not prove the full project passes. The initial failed raw plan was not
+  retained, so its exact criterion text/length remains unavailable.
 - The active MissionRunner executes ready tasks serially. Capability routing
   does not imply concurrent execution; the parallel target is `PAR-01`.
 - Context selection is a deterministic task-focused heuristic. Only complete
@@ -121,6 +132,7 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| PLAN-01 / RC13 fix | `pilots/doom-team-plan01-bounds-fix-20261019/REPORT.md` | Default/custom prompt bounds, unchanged parser limits, 42 targeted tests and 863 installed tests, offline build/install and quality passed |
 | PocketLedger initial showcase | `pilots/doom-team-showcase-pocketledger-20261019/VERIFICATION.md` | Failed before mission creation: overlong planner criterion; original result/cost preserved, no delivery claim |
 | RES-01 first exercise | `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md` | Actual process recovery passed; overall blocked by operator fixture/preflight error; retained unchanged |
 | RES-01 second exercise | `pilots/doom-team-res01-process-resume-v2-20261019/VERIFICATION.md` | Corrected fixture gates passed; retained external observer initialization-race failure, not a demonstrated model plan failure |
