@@ -1,8 +1,18 @@
 # Doom Team
 
-First real project developed by Doom Autopilot.
+Doom Team is a standalone engineering runner: a natural-language objective
+becomes a task plan, Gas City workers implement changes, and validation,
+independent QA and Reviewer checks lead to an explicit human approval gate.
+It has no runtime dependency on the older Doom Autopilot service.
 
-Read in order:
+For current work, start with:
+
+- [STATUS.md](STATUS.md): verified runtime baseline, evidence and known limits.
+- [TODO.md](TODO.md): prioritized work with completion criteria.
+- [Installation](runbooks/INSTALL.md) and [operation](runbooks/OPERATE.md).
+
+For the design and target architecture, read:
+
 1. `PROJECT.md`
 2. `ARCHITECTURE.md`
 3. `ROADMAP.md`
@@ -10,7 +20,7 @@ Read in order:
 
 Also review the Architecture Decision Records in `adr/` for key decisions.
 
-The repository intentionally starts with documentation only. Implementation must be produced by the Autopilot.
+`ROADMAP.md` describes architectural goals; it is not a completed-work checklist.
 
 ## Operator usage reporting
 

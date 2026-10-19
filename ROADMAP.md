@@ -1,4 +1,12 @@
-# Doom Team — Greenfield Roadmap
+# Doom Team — Architecture Roadmap
+
+These phases describe the target architecture, not a claim that every phase
+is complete. Use [STATUS.md](STATUS.md) for verified capabilities and evidence,
+and [TODO.md](TODO.md) for current priorities and completion criteria.
+
+In particular, the active MissionRunner currently executes one ready task at
+a time. Phase 9's concurrent-task target remains open as `PAR-01`; broader
+real-work reliability and process containment also remain explicit work items.
 
 ## Phase 0 — Foundation
 Bootstrap repository/tooling, architecture ADRs and reproducible quality baseline.
