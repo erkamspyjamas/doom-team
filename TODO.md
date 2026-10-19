@@ -41,9 +41,9 @@ This publication-status follow-up is documentation-only; its exact commit and
 remote verification are recorded in that operation report. No deployment or
 new paid pilot was started.
 
-- [ ] **REL-03 — Publish approved RC10/RC11 and follow-up status.** Requires a
+- [ ] **REL-03 — Publish approved RC10/RC11/RC12 and follow-up status.** Requires a
   separate explicit push authorization. Verify a normal main push and the
-  unchanged RC10/RC11 tags against remote refs; do not deploy or move old tags.
+  unchanged RC10/RC11/RC12 tags against remote refs; do not deploy or move old tags.
 
 ## P1 — Broaden real-work evidence
 
@@ -71,20 +71,28 @@ PROOF-02 evidence: `pilots/doom-team-proof02-history-query-20261019/VERIFICATION
 Both tasks passed first attempts. The exact candidate was approved/integrated
 as local RC11; see `pilots/doom-team-proof02-release-rc11-20261019/REPORT.md`.
 
-- [ ] **PROOF-03 — Refactor with preserved behavior.** Fix the external
+- [x] **PROOF-03 — Refactor with preserved behavior.** Fix the external
   behavior contract before execution. Done when old behavior and the
   required refactor are independently verified on the candidate.
 
-PROOF-03 is authorized for preparation/execution: extract event-value redaction
-into a focused pure helper while preserving existing behavior. Freeze the old
-implementation as an external differential oracle, plus acceptance and budgets,
-in `pilots/doom-team-proof03-redaction-refactor-20261019/`. Keep the checkbox
-open until exact-candidate independent behavior/structure checks pass.
+PROOF-03 evidence: the initial refactor remains review-blocked in
+`pilots/doom-team-proof03-redaction-refactor-20261019/VERIFICATION.md`. A fresh
+autonomous follow-up in `pilots/doom-team-proof03-redaction-fix-20261019/`
+passed 2272 independent checks and both complete 853-test installed suites.
+Only the final composite was approved/integrated as RC12. Retain both runs and
+their known USD 0.02821515 total; do not count this as a first-pass success.
 
 - [ ] **RES-01 — Actual interruption/resume exercise.** Interrupt a bounded
   real process at a pre-registered point, then resume from durable state.
   Verify preserved plan/retry budgets and provenance, no duplicate task
   integration, and no unreviewed frontier advancement.
+
+RES-01 is authorized for a fresh real-process exercise: after one task lands,
+SIGKILL a running dependent task, then invoke the installed CLI resume on the
+same durable mission. Pre-register cut point, acceptance and budgets in
+`pilots/doom-team-res01-process-resume-20261019/`. Leave RES-01 open until its
+process/provenance/retry/no-duplicate checks pass.
+
 - [ ] **ISO-01 — OS-level validation containment.** Define filesystem,
   process and network boundaries for model-authored build/test code. Verify
   those boundaries using deterministic probes before claiming containment.

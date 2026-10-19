@@ -8,14 +8,15 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc11`, `31a19492d8b0b061e0062c651307f261f40190ce`; approved PROOF-02 API feature |
-| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11 publication pending |
-| Documentation | This status/work-list update follows the immutable RC11 runtime tag |
+| Local runtime baseline | `v0.1.0-rc12`, `8ebee8a785fd139d5574a159a2edc90a2b288613`; approved complete PROOF-03 refactor/fix |
+| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10/RC11/RC12 publication pending |
+| Documentation | This status/work-list update follows the immutable RC12 runtime tag |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
 | RC10 installed validation | 760 external installed tests and 760 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | RC11 installed validation | 799 external installed tests and 799 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
+| RC12 installed validation | 2272 external checks, 853 external installed tests and 853 fresh final installed tests passed; real wheel builds/installs, Ruff and strict mypy passed |
 | Models | DeepSeek V4.1 Flash planner/author; independent GLM 5.3 Flash QA/Reviewer; high reasoning |
 
 The installed CLI uses the current local checkout through its editable
@@ -23,9 +24,18 @@ installation. Publication state and the runtime baseline are listed separately
 so local changes are distinguished from verified GitHub refs. Publication
 records below describe their recorded remote snapshots; newer local releases
 remain unpublished until separately authorized. Inspect them with `git log -1`,
-`git show v0.1.0-rc11 --stat` and `git ls-remote origin`.
+`git show v0.1.0-rc12 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
+
+- PROOF-03 extracted event-value redaction into a pure helper. The first run
+  passed registered gates but was blocked by additional review on a string
+  subclass regression. A fresh autonomous follow-up corrected it; the complete
+  final candidate passed 2272 independent checks and both 853-test installed
+  suites before explicit human approval and local RC12 integration. Both runs
+  are retained: four attempts, 14 successful calls, known USD 0.02821515 total.
+  The follow-up alone passed its first attempt; the refactor was not a
+  first-pass success. No operator candidate-code edits occurred.
 
 - PROOF-02 added `EventHistory.query` with exact conjunctive kind/task/role
   filters and a limit applied after matching in durable append order. Both
@@ -86,6 +96,9 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| PROOF-03 initial review | `pilots/doom-team-proof03-redaction-refactor-20261019/VERIFICATION.md` | Original registered passes plus retained supplemental review block; original mission unapproved |
+| PROOF-03 follow-up | `pilots/doom-team-proof03-redaction-fix-20261019/VERIFICATION.md` | Complete final candidate, new regressions, independent checks and both-run history |
+| RC12 approval/integration | `pilots/doom-team-proof03-release-rc12-20261019/REPORT.md` | Final composite approval, exact-SHA fast-forward and immutable local RC12; no push |
 | PROOF-02 pilot | `pilots/doom-team-proof02-history-query-20261019/VERIFICATION.md` | Exact-SHA API preservation, independent installed acceptance and all outcomes |
 | RC11 approval/integration | `pilots/doom-team-proof02-release-rc11-20261019/REPORT.md` | Explicit approval, exact-SHA fast-forward and immutable local RC11; no push |
 | PROOF-01 pilot | `pilots/doom-team-proof01-active-retry-20261019/VERIFICATION.md` | Baseline defect reproduction, exact-SHA independent acceptance and all outcomes |
