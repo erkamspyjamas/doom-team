@@ -168,22 +168,30 @@ class EventHistory:
         return events[-limit:]
 
     def active_tasks(self) -> list[dict[str, str]]:
+        """Return tasks currently active according to durable append order.
+
+        A task becomes active on its latest ``TASK_STARTED`` event and
+        inactive on a later ``TASK_COMPLETED`` or ``TASK_FAILED``. Repeated
+        starts update ``started_at`` without duplicating the task; terminal
+        events without a preceding start do not block a future start.
+        Invalid or unrelated events are ignored.
+        """
         events = self._sink.load()
-        started: dict[str, str] = {}
-        completed: set[str] = set()
+        started_at: dict[str, str] = {}
+        active: set[str] = set()
         for event in events:
+            task_id = event.details.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                continue
             if event.kind == "TASK_STARTED":
-                task_id = event.details.get("task_id")
-                if task_id and isinstance(task_id, str):
-                    started[task_id] = event.timestamp.isoformat()
+                started_at[task_id] = event.timestamp.isoformat()
+                active.add(task_id)
             elif event.kind in ("TASK_COMPLETED", "TASK_FAILED"):
-                task_id = event.details.get("task_id")
-                if task_id and isinstance(task_id, str):
-                    completed.add(task_id)
+                active.discard(task_id)
         return [
             {"task_id": tid, "started_at": ts}
-            for tid, ts in started.items()
-            if tid not in completed
+            for tid, ts in started_at.items()
+            if tid in active
         ]
 
     def recent_errors(self, limit: int = 10) -> list[Event]:
