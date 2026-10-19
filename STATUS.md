@@ -8,12 +8,13 @@ changes the runtime, its validation or a work item's status.
 
 | Area | Verified state |
 |---|---|
-| Local runtime baseline | `v0.1.0-rc9`, `c7d98958dc70dbcd4e769a92297aaef5fcfc091e` |
-| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at documentation commit `5f9a45cc1bdeadd9cfcfcd19a9552111d28b3297` before this publication-status follow-up |
-| Documentation | STATUS/TODO and navigation updates are a separate documentation-only follow-up to RC9 |
+| Local runtime baseline | `v0.1.0-rc10`, `b1669ad5e5f00fbaeda29d3f99ef54c9848ff673`; approved PROOF-01 fix |
+| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at `5209205b50812b8241627ae0a69e4f0a5c869992`; RC10 publication pending |
+| Documentation | This status/work-list update follows the immutable RC10 runtime tag |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
 | RC9 complete installed suite | 750 passed in a frozen RC9 snapshot; actual offline wheel build/install passed; see `BASE-01` |
+| RC10 installed validation | 760 external installed tests and 760 fresh final installed tests passed; actual wheel builds/installs, Ruff and strict mypy passed |
 | Models | DeepSeek V4.1 Flash planner/author; independent GLM 5.3 Flash QA/Reviewer; high reasoning |
 
 The installed CLI uses the current local checkout through its editable
@@ -25,6 +26,12 @@ with `git log -1`, `git show v0.1.0-rc9 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
 
+- PROOF-01 fixed active-task diagnostics hiding running retries/restarts. One
+  task passed in one attempt, with 55 independent installed acceptance checks,
+  760 external installed tests and 760 fresh final installed tests. Known cost
+  USD 0.01149598 for four calls; zero provider errors or operator code edits.
+  Explicit human approval bound the exact SHA before local RC10 integration.
+  This is one bounded diagnostics defect, not a general reliability rate.
 - Natural-language planning, capability routing, isolated Git workspaces,
   out-of-process Gas City execution, validation, QA, Reviewer, bounded retries,
   fresh final validation and explicit human approval work end to end.
@@ -70,6 +77,8 @@ labels without rewriting the historical reports.
 
 | Evidence | Operator-host location | Scope |
 |---|---|---|
+| PROOF-01 pilot | `pilots/doom-team-proof01-active-retry-20261019/VERIFICATION.md` | Baseline defect reproduction, exact-SHA independent acceptance and all outcomes |
+| RC10 approval/integration | `pilots/doom-team-proof01-release-rc10-20261019/REPORT.md` | Explicit human approval, exact-SHA fast-forward, immutable local RC10 tag; no push |
 | RC9 fix | `pilots/doom-team-approval-digest-rc9-20261019/REPORT.md` | 750 editable tests, 53 installed affected tests, preserved canonical approval replay |
 | RC9 full installed baseline | `pilots/doom-team-rc9-installed-baseline-20261019/quality/verification.json` | Authoritative outcome for `BASE-01`; snapshot is immutable RC9, separate from documentation editing |
 | Real usage pilot | `pilots/doom-team-usage-rc7-20261019/VERIFICATION.md` | Independent acceptance and per-task/final evidence before human approval |

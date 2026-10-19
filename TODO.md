@@ -41,6 +41,10 @@ This publication-status follow-up is documentation-only; its exact commit and
 remote verification are recorded in that operation report. No deployment or
 new paid pilot was started.
 
+- [ ] **REL-03 — Publish approved RC10 and follow-up status.** Requires a
+  separate explicit push authorization. Verify a normal main push and the
+  unchanged RC10 tag against remote refs; do not deploy or move old tags.
+
 ## P1 — Broaden real-work evidence
 
 The following three cases use fresh destinations/state and new external
@@ -49,12 +53,23 @@ all outcomes, retries, blockers, elapsed time and known/unknown costs; record
 operator code interventions explicitly. Do not infer a success rate from
 only the cases that passed.
 
-- [ ] **PROOF-01 — Bug fix in an existing repository.** Pre-register a real
+- [x] **PROOF-01 — Bug fix in an existing repository.** Pre-register a real
   defect, regression and independent acceptance. Done when the mission
   naturally reaches human review and acceptance passes on its exact SHA.
+PROOF-01 evidence: `pilots/doom-team-proof01-active-retry-20261019/VERIFICATION.md`;
+55 independent checks, 760 external and 760 fresh final installed tests passed.
+The exact candidate was explicitly approved and integrated as local RC10; see
+`pilots/doom-team-proof01-release-rc10-20261019/REPORT.md`.
+
 - [ ] **PROOF-02 — Feature in an existing module/API.** Require preservation
   of existing behavior and explicit API tests. Use the same independent
   acceptance and candidate-identity standard as PROOF-01.
+PROOF-02 is authorized for preparation/execution: add a filtered read-only
+`EventHistory.query` API while preserving existing history methods. The frozen
+objective, independent acceptance and budgets will be retained in
+`pilots/doom-team-proof02-history-query-20261019/`. This item stays open until
+its exact candidate independently passes.
+
 - [ ] **PROOF-03 — Refactor with preserved behavior.** Fix the external
   behavior contract before execution. Done when old behavior and the
   required refactor are independently verified on the candidate.
