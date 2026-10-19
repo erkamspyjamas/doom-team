@@ -143,6 +143,14 @@ interface. `doom-team status` continues to print the built-in summaries, and
 
 Secrets are redacted **at the sink** before persistence. The configured provider API key (and any additional secret values passed to `DurableEventSink`) are replaced with `[REDACTED]` in every string field. Private reasoning contents from inference responses are never recorded; only token counts and provenance are captured.
 
+### Architecture: pure helper plus thin adapter
+
+Event-value redaction is implemented by the pure `redact_value(value, secret_values)` helper in `src/doom_team/redaction.py`. The helper has no dependencies beyond the standard library and performs no I/O: it reads no environment variables, configuration or files, and writes no logs or network traffic. It walks strings, dict values, lists and tuples, returning new containers and never mutating its input.
+
+`RedactingEventSink._redact` is a thin delegating adapter: it calls `redact_value(value, self._secrets)` and contains no traversal logic of its own. Its signature, its callers and the sink's observable output are unchanged.
+
+Redaction behavior and policy are unchanged by this extraction. Strings still replace each nonempty configured secret in the supplied order with `[REDACTED]`; there is no sorting, de-duplication, key redaction, regex matching or added normalization. Overlapping secrets, duplicate or empty secrets and literal `[REDACTED]` values behave exactly as before. Dict keys stay unchanged while values are recursively processed, dict/list/tuple outputs keep their built-in container types and ordering, and other values pass through unchanged. `RedactingEventSink` still filters empty secrets in constructor order, and `record()` still preserves kind/role/run/timestamp while emitting the same redacted `Event` to the wrapped sink, so the persisted JSONL, reload and restart behavior match the previous baseline exactly.
+
 ## Health and Readiness
 
 - `check_health(settings)` returns `(True, "healthy")` when all durable state directories exist and the event log is readable.
