@@ -185,7 +185,7 @@ class DurableApprovalPort(ApprovalPort):
         digest = data.pop("digest")
         if digest != _digest(data):
             raise ApprovalRecordCorruptError("Approval record digest mismatch")
-        return ApprovalRecord(**data)
+        return ApprovalRecord(**data, digest=digest)
 
     def request_approval(self, action: str, context: dict[str, Any]) -> bool:
         """Return True only for a valid, current, non-corrupt approval record."""

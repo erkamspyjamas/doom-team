@@ -1,6 +1,7 @@
 """Tests for the durable ApprovalPort and its fail-closed verification."""
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,39 @@ def test_approve_binds_required_fields(tmp_path: Path) -> None:
     assert data["contract_revision"] == "contract-1"
     assert data["roadmap_revision"] == "roadmap-1"
     assert data["digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("decision", [True, False], ids=("approve", "deny"))
+def test_load_preserves_complete_record_and_digest_across_restart(tmp_path: Path, decision: bool) -> None:
+    port = _make_port(tmp_path)
+    digest = port.approve(
+        "release", "sha123", "ops-1", decision=decision,
+        timestamp="2024-01-01T00:00:00+00:00",
+    )
+    path = port._path("release", "sha123")
+    before = path.read_bytes()
+    persisted = json.loads(before)
+    restarted = _make_port(tmp_path)
+    loaded = restarted.load("release", "sha123")
+    assert loaded.digest == digest == persisted["digest"]
+    assert asdict(loaded) == persisted  # Audit consumers must retain every verified field.
+    assert restarted.request_approval("release", {"frontier_sha": "sha123"}) is decision
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("digest", ["", "sha256:" + "0" * 64], ids=("empty", "incorrect"))
+def test_load_rejects_corrupted_digest(tmp_path: Path, digest: str) -> None:
+    port = _make_port(tmp_path)
+    port.approve("release", "sha123", "ops-1")
+    path = port._path("release", "sha123")
+    data = json.loads(path.read_text())
+    data["digest"] = digest
+    path.write_text(json.dumps(data))
+    before = path.read_bytes()
+    with pytest.raises(ApprovalRecordCorruptError):
+        port.load("release", "sha123")
+    assert port.request_approval("release", {"frontier_sha": "sha123"}) is False
+    assert path.read_bytes() == before
 
 
 def test_request_approval_true_when_valid(tmp_path: Path) -> None:
