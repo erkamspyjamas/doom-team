@@ -201,6 +201,31 @@ def _run(
     return result, store, inference
 
 
+@pytest.mark.parametrize("stage", ["task", "final"])
+def test_configured_validation_timeout_bounds_task_and_final(
+    tmp_path: Path, stage: str,
+) -> None:
+    plan = json.loads(PLAN)
+    plan["tasks"] = plan["tasks"][:1]
+    sleep = (ValidationCommand("budget-check", (PY, "-c", "import time; time.sleep(1)")),)
+    instant = (ValidationCommand("instant", (PY, "-c", "pass")),)
+    runner = MissionRunner(
+        MissionInference(plan=json.dumps(plan)), MissionStore(tmp_path / "state"),
+        workspaces_root=tmp_path / "work", semantic_retries=0,
+        validation_commands=sleep if stage == "task" else instant,
+        final_validation_commands=sleep if stage == "final" else instant,
+        validation_timeout=0.1,
+    )
+    result = runner.run("Implement arithmetic", tmp_path / "project")
+    if stage == "task":
+        assert result.status == MISSION_BLOCKED
+        evidence = result.record.tasks[0].attempts[0].validation
+    else:
+        assert result.status == MISSION_FINAL_VALIDATION_FAILED
+        evidence = result.record.final_validation
+    assert evidence and evidence[0]["timed_out"] is True
+
+
 # --- 31: the whole happy path through ONE MissionRunner invocation ---------
 
 

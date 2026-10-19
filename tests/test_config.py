@@ -32,6 +32,26 @@ def test_optional_defaults_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert settings.runtime == "local"
     assert settings.semantic_retries == 3
     assert settings.provider_api_key_env == "DOOM_API_KEY"
+    assert settings.validation_command_timeout == 300.0
+
+
+def test_validation_timeout_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret")
+    monkeypatch.setenv("DOOM_VALIDATION_COMMAND_TIMEOUT", "1200")
+    loader = ConfigLoader()
+    assert loader.load(**_valid_kwargs(tmp_path)).validation_command_timeout == 1200.0
+    settings = loader.load(**_valid_kwargs(tmp_path), validation_command_timeout=900)
+    assert settings.validation_command_timeout == 900.0
+    assert settings.as_evidence_dict()["validation_command_timeout"] == 900.0
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "nan", "inf", "invalid", 3601])
+def test_invalid_validation_timeout_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: object,
+) -> None:
+    monkeypatch.setenv("DOOM_API_KEY", "secret")
+    with pytest.raises(ConfigError, match="validation_command_timeout"):
+        ConfigLoader().load(**_valid_kwargs(tmp_path), validation_command_timeout=value)  # type: ignore[arg-type]
 
 
 def test_precedence_explicit_over_env_over_file_over_defaults(

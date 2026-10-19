@@ -61,9 +61,13 @@ as an eligible provider alternate; DeepSeek uses `deepinfra/fp8`.
 The account's current privacy policy excludes DeepSeek's first-party
 endpoint. That policy is respected, never relaxed by these profiles.
 
-Requests are bounded at 600 seconds. A worker gets 4,500 seconds, covering
-the worst case of three logical calls with one availability fallback each
-(6 x 600 seconds), two 300-second validations, and bounded overhead.
+Requests are bounded at 600 seconds. A worker gets 4,500 seconds. Three
+logical calls with one availability fallback each can use 6 x 600 seconds;
+flat fixtures also have two validations bounded at 300 seconds each.
+Packaged src-layout candidates additionally build/install offline in a fresh
+environment, with separate 300-second command bounds. These are ceilings,
+not a guarantee that every stage can consume its maximum within the worker
+budget. Worker and mission caps remain authoritative for larger projects.
 Canaries retain the frozen 5,400-second mission policy, four base attempts,
 and existing one-shot quality reserve. Long tasks can still hit that mission
 limit; larger token budgets are ceilings, not promises to spend them.

@@ -75,6 +75,7 @@ from doom_team.transport import (
     transport_failure,
 )
 from doom_team.validation import (
+    DEFAULT_COMMAND_TIMEOUT,
     ValidationCommand,
     ValidationExecutionError,
     run_validation_commands,
@@ -190,6 +191,7 @@ class MissionRunner:
         transport: TaskExecutionTransport | None = None,
         validation_policy: str = "default",
         transport_name: str = "",
+        validation_timeout: float = DEFAULT_COMMAND_TIMEOUT,
     ) -> None:
         if not validation_commands:
             raise MissionRunError("a mission requires at least one validation command")
@@ -201,6 +203,7 @@ class MissionRunner:
         self._store = store
         self._workspaces_root = Path(workspaces_root)
         self._validation_commands = tuple(validation_commands)
+        self._validation_timeout = validation_timeout
         self._final_validation_commands = tuple(
             final_validation_commands
             if final_validation_commands is not None
@@ -208,7 +211,8 @@ class MissionRunner:
         )
         self._event_sink = event_sink
         self._task_runner = ProductionTaskRunner(
-            inference, validation_commands=self._validation_commands
+            inference, validation_commands=self._validation_commands,
+            validation_timeout=validation_timeout,
         )
         # Where a task attempt executes is a transport concern; everything the
         # mission decides is unchanged either way. The default keeps the
@@ -747,7 +751,9 @@ class MissionRunner:
             workspace = repo.create_task_workspace(
                 FINAL_VALIDATION_TASK_ID, self._workspaces_root, baseline_sha=frontier
             )
-            results = run_validation_commands(workspace.path, self._final_validation_commands)
+            results = run_validation_commands(
+                workspace.path, self._final_validation_commands, timeout=self._validation_timeout,
+            )
         except (DeliverableError, ValidationExecutionError) as exc:
             return self._blocked(mission_id, "final_validation_unavailable", str(exc))
 

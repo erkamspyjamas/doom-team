@@ -57,6 +57,7 @@ from doom_team.inference import InferenceError
 from doom_team.ports import InferencePort
 from doom_team.routing import RoutingDecision, SpecialistProfile
 from doom_team.validation import (
+    DEFAULT_COMMAND_TIMEOUT,
     ValidationCommand,
     ValidationResult,
     run_validation_commands,
@@ -368,12 +369,14 @@ class ProductionTaskRunner:
         *,
         validation_commands: tuple[ValidationCommand, ...] | list[ValidationCommand],
         quality_inference: InferencePort | None = None,
+        validation_timeout: float = DEFAULT_COMMAND_TIMEOUT,
     ) -> None:
         if not validation_commands:
             raise TaskRunnerError("a task runner requires at least one validation command")
         self._inference = inference
         self._quality_inference = quality_inference if quality_inference is not None else inference
         self._validation_commands = tuple(validation_commands)
+        self._validation_timeout = validation_timeout
 
     def run_task(
         self,
@@ -517,7 +520,7 @@ class ProductionTaskRunner:
             return failed(f"candidate export failed: {exc!r}")
         try:
             validation_results = run_validation_commands(
-                export, self._validation_commands
+                export, self._validation_commands, timeout=self._validation_timeout,
             )
         except Exception as exc:  # boundary: always a typed result
             return failed(f"validation could not execute: {exc!r}")

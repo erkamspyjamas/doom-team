@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +173,7 @@ def execute_command(
     workspace_root: str | Path,
     cwd: str | Path | None = None,
     timeout: float = DEFAULT_COMMAND_TIMEOUT,
+    environment: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Execute one structured command inside the workspace and record it.
 
@@ -183,7 +185,7 @@ def execute_command(
     safe_argv = _validate_argv(argv)
     resolved_cwd = _confined_cwd(cwd if cwd is not None else workspace_root, workspace_root)
     command = network_isolation_prefix() + list(safe_argv)
-    environment = sanitize_env()
+    environment = sanitize_env(environment)
     started = time.monotonic()
     # Child output spills to disk files (never pipes held in memory) so a
     # torrential command cannot exhaust validator memory; only a bounded
@@ -231,6 +233,23 @@ def run_validation_commands(
     """Execute every validation command for real and derive honest results."""
     if not commands:
         raise ValidationExecutionError("a validation plan must contain at least one command")
+    from doom_team.candidate_python import installed_candidate, needs_candidate_install
+
+    root = Path(workspace_root).resolve()
+    if any(needs_candidate_install(root, c.argv) for c in commands):
+        with installed_candidate(root, timeout) as candidate:
+            prepared = list(candidate.preparation)
+            if candidate.interpreter is None:
+                return tuple(prepared)
+            for command in commands:
+                argv = command.argv
+                if needs_candidate_install(root, argv):
+                    argv = (str(candidate.interpreter), "-I", *argv[1:])
+                result = execute_command(
+                    argv, workspace_root=root, timeout=timeout, environment=candidate.environment,
+                )
+                prepared.append(ValidationResult(label=command.label, command=result))
+            return tuple(prepared)
     results: list[ValidationResult] = []
     for command in commands:
         result = execute_command(

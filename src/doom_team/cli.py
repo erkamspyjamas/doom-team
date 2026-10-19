@@ -293,6 +293,7 @@ def _build_mission_runner(
         semantic_retries=settings.semantic_retries,
         transport=transport,
         transport_name=settings.task_transport,
+        validation_timeout=settings.validation_command_timeout,
     )
 
 

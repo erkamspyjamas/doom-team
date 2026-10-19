@@ -73,3 +73,37 @@ and metadata are written at install time. After pulling changes that touch
 
 See `docs/DEPENDENCIES.md` for the locking strategy and how to upgrade
 dependencies deliberately.
+
+## Validating packaged src-layout deliverables
+
+The installed CLI and workers remain the trusted Doom runtime. When the
+default pytest policy validates a deliverable containing `src/` and Python
+packaging metadata, it builds a wheel offline and installs it in a fresh,
+temporary virtual environment. Tests and the candidate's installed console
+scripts use that environment; they cannot accidentally use the host's older
+installation of the same package. Fresh final validation uses the same path.
+
+The runtime therefore needs `pip`, `pytest`, and the candidate's build backend
+and dependencies provisioned beforehand. No dependency or build-isolation
+download is attempted. Available host dependency packages are reused without
+host `.pth` hooks or the candidate's own host package/distribution. Doom
+runtime settings, credentials and inherited interpreter overrides are removed
+from candidate commands, so application tests supply their own configuration.
+Missing
+backends, build failures, or installation failures block validation. Other
+third-party dependencies are reused, not version-resolved against the
+candidate's requirements; this is not a reproducible dependency resolver.
+
+Evidence includes the actual `package-build`, `package-install`, compile and
+test commands with their exits and bounded output. Each command keeps its
+existing 300-second default bound, configurable by the operator with
+`DOOM_VALIDATION_COMMAND_TIMEOUT` (finite seconds, greater than zero, at most
+3600). The setting applies to task and final validation; task requests cannot
+choose a timeout. Setup adds commands, so worker and mission
+limits can still stop a large repository. Temporary environments are removed
+after validation, while command evidence and exported candidates remain.
+Flat Python fixtures and compile-only policies retain their previous path.
+
+This isolates package imports, not filesystem or process authority. Building
+and testing candidate code still has the documented subprocess guard's
+limitations; do not treat the virtual environment as a security sandbox.

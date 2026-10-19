@@ -101,6 +101,7 @@ def run_attempt(request: TaskAttemptRequest) -> dict[str, Any]:
     )
     runner = ProductionTaskRunner(
         client, validation_commands=resolve_validation_policy(request.validation_policy),
+        validation_timeout=settings.validation_command_timeout,
         quality_inference=build_quality_inference_client(
             settings, event_sink=sink,
             producer_run=f"{request.mission_id}/{request.task_id}/quality",

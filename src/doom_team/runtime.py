@@ -110,6 +110,7 @@ def build_task_execution_transport(
         return InProcessTaskTransport(
             ProductionTaskRunner(
                 inference, validation_commands=resolve_validation_policy(validation_policy),
+                validation_timeout=settings.validation_command_timeout,
                 quality_inference=build_quality_inference_client(
                     settings, event_sink=event_sink, producer_run="quality"
                 ) if settings.quality_model_route == "fallback" else None,

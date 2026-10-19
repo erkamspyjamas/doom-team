@@ -12,6 +12,7 @@ credential is recorded.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -80,6 +81,7 @@ class Settings:
     forbidden_providers: tuple[str, ...] = ("Relace",)
     allow_fallbacks: bool = True
     request_timeout: float = 60.0
+    validation_command_timeout: float = 300.0
     provider_base_url: str | None = None
     # Where task attempts execute. Trusted operator configuration: a task
     # attempt can name WHICH policy applies, never where or what runs.
@@ -143,6 +145,7 @@ class Settings:
             f"forbidden_providers={self.forbidden_providers} "
             f"allow_fallbacks={self.allow_fallbacks} "
             f"request_timeout={self.request_timeout} "
+            f"validation_command_timeout={self.validation_command_timeout} "
             f"provider_base_url={self.provider_base_url} "
             f"nvidia_reasoning_effort={self.nvidia_reasoning_effort} "
             f"openrouter_reasoning_effort={self.openrouter_reasoning_effort} "
@@ -172,6 +175,7 @@ class Settings:
             "forbidden_providers": list(self.forbidden_providers),
             "allow_fallbacks": self.allow_fallbacks,
             "request_timeout": self.request_timeout,
+            "validation_command_timeout": self.validation_command_timeout,
             "task_transport": self.task_transport,
             "gas_city_city": self.gas_city_city,
             "gas_city_agent": self.gas_city_agent,
@@ -200,6 +204,7 @@ class Settings:
             f"forbidden_providers={self.forbidden_providers!r}, "
             f"allow_fallbacks={self.allow_fallbacks!r}, "
             f"request_timeout={self.request_timeout!r}, "
+            f"validation_command_timeout={self.validation_command_timeout!r}, "
             f"provider_base_url={self.provider_base_url!r}, credential=[REDACTED])"
         )
 
@@ -220,6 +225,7 @@ class ConfigLoader:
         forbidden_providers: str | None = None,
         allow_fallbacks: bool | None = None,
         request_timeout: float | None = None,
+        validation_command_timeout: float | None = None,
         provider_base_url: str | None = None,
         nvidia_reasoning_effort: str | None = None,
         openrouter_reasoning_effort: str | None = None,
@@ -331,6 +337,20 @@ class ConfigLoader:
                 timeout = 60.0
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
             raise ConfigError(f"request_timeout must be a number: {timeout!r}")
+
+        validation_timeout_raw: Any = validation_command_timeout
+        if validation_timeout_raw is None:
+            validation_timeout_raw = env_value("validation_command_timeout")
+        if validation_timeout_raw is None:
+            validation_timeout_raw = file_values.get("validation_command_timeout", 300.0)
+        if isinstance(validation_timeout_raw, bool):
+            raise ConfigError("validation_command_timeout must be finite and in (0, 3600]")
+        try:
+            validation_timeout = float(validation_timeout_raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConfigError("validation_command_timeout must be finite and in (0, 3600]") from exc
+        if not math.isfinite(validation_timeout) or not 0 < validation_timeout <= 3600:
+            raise ConfigError("validation_command_timeout must be finite and in (0, 3600]")
 
         def validated_base_url(raw: Any, label: str) -> str | None:
             if raw is None:
@@ -576,6 +596,7 @@ class ConfigLoader:
             forbidden_providers=forbidden_value,
             allow_fallbacks=bool(allow),
             request_timeout=float(timeout),
+            validation_command_timeout=validation_timeout,
             provider_base_url=base_url_value,
             nvidia_reasoning_effort=effort,
             openrouter_reasoning_effort=router_effort,
