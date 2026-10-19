@@ -28,6 +28,17 @@ remain unpublished until separately authorized. Inspect them with `git log -1`,
 
 ## Demonstrated behavior
 
+- RES-01 completed a real SIGKILL/new-process resume on its third exercise.
+  Both dependent fixture tasks integrated in three attempts; the completed
+  task was unchanged, the interrupted attempt retained, retry budgets and
+  routing preserved, and terminal resume did no work or provider calls.
+  All 38 independent checks, 13 fixture tests, Ruff and strict mypy passed.
+  V1's operator fixture lint failure and V2's observer initialization race
+  remain preserved; this is not a first-run pass. V3 used seven successful
+  calls, known USD 0.00251134; all three runs total known USD 0.00612803,
+  excluding possible unreported interrupted-call charges. No product runtime
+  changes, fixture approval/integration, push or deployment occurred.
+
 - PROOF-03 extracted event-value redaction into a pure helper. The first run
   passed registered gates but was blocked by additional review on a string
   subclass regression. A fresh autonomous follow-up corrected it; the complete
@@ -83,13 +94,11 @@ benchmark, a ten-case holdout, or a general real-repository reliability rate.
   [the context contract](runbooks/INSTALL.md#task-workspace-context).
 - Candidate wheel/venv isolation prevents stale package imports. It is not an
   OS filesystem/process sandbox; containment work is tracked as `ISO-01`.
-- RES-01 demonstrated actual SIGKILL/new-process resume, preserved plan and
-  retry budgets, no duplicated integration, and terminal resume with no work.
-  Its first overall result stayed blocked because an unchanged operator-made
-  fixture failed Ruff; the corrected-fixture repeat is being prepared under
-  `pilots/doom-team-res01-process-resume-v2-20261019/`. Keep RES-01 open until
-  every registered gate passes. These bounded cases do not close broader
-  reliability and production-readiness goals in [ROADMAP.md](ROADMAP.md).
+- RES-01 closes one predetermined process-cut/recovery exercise in a small
+  synthetic repository. It does not establish recovery under every failure,
+  a general reliability rate or broader production readiness. OS containment,
+  large-file editing and actual concurrency remain open in [TODO.md](TODO.md);
+  the architectural goals in [ROADMAP.md](ROADMAP.md) are not all complete.
 
 ## Evidence index
 
@@ -101,7 +110,8 @@ labels without rewriting the historical reports.
 | Evidence | Operator-host location | Scope |
 |---|---|---|
 | RES-01 first exercise | `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md` | Actual process recovery passed; overall blocked by operator fixture/preflight error; retained unchanged |
-| RES-01 corrected repeat | `pilots/doom-team-res01-process-resume-v2-20261019/README.md` | New fixture, full offline preflight, frozen effective lint settings; result pending |
+| RES-01 second exercise | `pilots/doom-team-res01-process-resume-v2-20261019/VERIFICATION.md` | Corrected fixture gates passed; retained external observer initialization-race failure, not a demonstrated model plan failure |
+| RES-01 successful third exercise | `pilots/doom-team-res01-process-resume-v3-20261019/VERIFICATION.md` | Actual SIGKILL/resume, unchanged completed task/budgets, terminal no-op and all final gates passed; prior failures retained |
 | PROOF-03 initial review | `pilots/doom-team-proof03-redaction-refactor-20261019/VERIFICATION.md` | Original registered passes plus retained supplemental review block; original mission unapproved |
 | PROOF-03 follow-up | `pilots/doom-team-proof03-redaction-fix-20261019/VERIFICATION.md` | Complete final candidate, new regressions, independent checks and both-run history |
 | RC12 approval/integration | `pilots/doom-team-proof03-release-rc12-20261019/REPORT.md` | Final composite approval, exact-SHA fast-forward and immutable local RC12; no push |

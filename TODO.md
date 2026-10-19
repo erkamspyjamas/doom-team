@@ -82,18 +82,24 @@ passed 2272 independent checks and both complete 853-test installed suites.
 Only the final composite was approved/integrated as RC12. Retain both runs and
 their known USD 0.02821515 total; do not count this as a first-pass success.
 
-- [ ] **RES-01 — Actual interruption/resume exercise.** Interrupt a bounded
+- [x] **RES-01 — Actual interruption/resume exercise.** Interrupt a bounded
   real process at a pre-registered point, then resume from durable state.
   Verify preserved plan/retry budgets and provenance, no duplicate task
   integration, and no unreviewed frontier advancement.
 
-RES-01 first exercise preserved all process/provenance/retry/no-duplicate
-checks, but the overall result was blocked by an operator-created fixture
-import-spacing error that baseline lint preflight missed. Preserve that result
-in `pilots/doom-team-res01-process-resume-20261019/VERIFICATION.md`. The user
-authorized a fresh repeat in `pilots/doom-team-res01-process-resume-v2-20261019/`: corrected new fixture, every baseline quality gate preflighted, same objective
-and cut/process/behavior contracts, frozen tools/effective lint settings.
-Leave RES-01 open until all registered final gates pass.
+RES-01 completion evidence:
+`pilots/doom-team-res01-process-resume-v3-20261019/VERIFICATION.md` and
+`verification/summary.json`. Actual SIGKILL/new-process resume preserved the
+completed task, plan, routing and retry budgets; exactly two reviewed frontier
+advances and a provider-free terminal no-op. All 38 independent checks,
+13 fixture tests, Ruff and strict mypy passed on exact candidate
+`321ff68bfc573121e4584add0d79c55a78385257`. Two tasks, three attempts,
+seven successful calls; known USD 0.00251134 for V3. Keep V1's operator fixture
+lint failure and V2's external observer initialization race as failed outcomes,
+not model failures erased by this success. All three known costs total
+USD 0.00612803, excluding possible unreported interrupted-call charges.
+The synthetic candidate remains unapproved; no product runtime change,
+integration, push or deployment was needed to complete this exercise.
 
 - [ ] **ISO-01 — OS-level validation containment.** Define filesystem,
   process and network boundaries for model-authored build/test code. Verify
