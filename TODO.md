@@ -22,7 +22,7 @@ starting. Preserve failures and do not assist a generated candidate mid-run.
   link them from README/ROADMAP and check local documentation links. Done
   when the documents distinguish runtime/publication state, tested evidence,
   known limits and remaining goals; commit only documentation changes.
-- [ ] **REL-01 — Publish the RC9 fix and documentation.** Requires explicit
+- [x] **REL-01 — Publish the RC9 fix and documentation.** Requires explicit
   push authorization. Done when a normal fast-forward main push and the
   unchanged RC9 tag are verified against remote refs. Never force-update old
   tags. Deployment is a separate decision.
@@ -33,6 +33,13 @@ Completion evidence for BASE-01 and DOC-01 is retained on the operator host at
 and product runtime/test hashes matched, and 13 local documentation links
 passed validation. The documentation-only commit is recorded in this file's
 Git history. The immutable tested runtime tag remains RC9.
+
+REL-01 publication evidence is retained at
+`/home/eko/doom/pilots/doom-team-rc9-push-20261019/`: main and the immutable RC9
+tag were pushed atomically and independently verified against GitHub refs.
+This publication-status follow-up is documentation-only; its exact commit and
+remote verification are recorded in that operation report. No deployment or
+new paid pilot was started.
 
 ## P1 — Broaden real-work evidence
 

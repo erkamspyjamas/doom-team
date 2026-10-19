@@ -9,7 +9,7 @@ changes the runtime, its validation or a work item's status.
 | Area | Verified state |
 |---|---|
 | Local runtime baseline | `v0.1.0-rc9`, `c7d98958dc70dbcd4e769a92297aaef5fcfc091e` |
-| Latest verified GitHub main/release | RC8, `70fab9e7d9c89330794e90652db82b76dd1e551d`; RC9 publication pending |
+| Latest verified GitHub publication | RC9 tag at `c7d98958dc70dbcd4e769a92297aaef5fcfc091e`; main verified at documentation commit `5f9a45cc1bdeadd9cfcfcd19a9552111d28b3297` before this publication-status follow-up |
 | Documentation | STATUS/TODO and navigation updates are a separate documentation-only follow-up to RC9 |
 | RC9 complete editable suite | 750 passed; Ruff and strict mypy passed |
 | Earlier RC9 affected installed suite | 53 affected approval/supervisor/mission-ledger tests passed |
@@ -18,7 +18,9 @@ changes the runtime, its validation or a work item's status.
 
 The installed CLI uses the current local checkout through its editable
 installation. Publication state and the runtime baseline are listed separately
-so an unpublished local fix is not mistaken for a pushed release. Inspect them
+so local changes are distinguished from verified GitHub refs. The publication
+record below also captures this status-only follow-up commit and its remote
+verification. Inspect them
 with `git log -1`, `git show v0.1.0-rc9 --stat` and `git ls-remote origin`.
 
 ## Demonstrated behavior
@@ -73,6 +75,7 @@ labels without rewriting the historical reports.
 | Real usage pilot | `pilots/doom-team-usage-rc7-20261019/VERIFICATION.md` | Independent acceptance and per-task/final evidence before human approval |
 | Approval and integration | `pilots/doom-team-usage-release-rc8-20261019/REPORT.md` | Explicit human approval, exact-SHA integration, installed CLI checks |
 | RC8 push | `pilots/doom-team-rc8-push-20261019/REPORT.md` | Atomic main/tag push and remote-ref verification |
+| RC9 push | `pilots/doom-team-rc9-push-20261019/REPORT.md` | Atomic main/immutable RC9 tag push, publication-status follow-up and independent remote-ref verification |
 | Historical model evaluation | `benchmarks/doom-bench-v1/experiments/rc4-selected-remaining-20261019/summary.json` | Selected-profile coverage across the two RC4 batches |
 
 For the next operation and measurable completion criteria, use
