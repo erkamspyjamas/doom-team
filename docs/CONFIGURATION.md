@@ -38,6 +38,8 @@ credential is missing. There are no defaults for required values.
 | `allow_fallbacks` | no | `DOOM_ALLOW_FALLBACKS` | Allow provider fallbacks (default `true`) |
 | `request_timeout` | no | `DOOM_REQUEST_TIMEOUT` | Per-request timeout in seconds (default `60.0`) |
 | `validation_command_timeout` | no | `DOOM_VALIDATION_COMMAND_TIMEOUT` | Per validation command, including offline build/install and fresh final validation; finite seconds in (0, 3600], default 300.0. Trusted operator setting, never supplied by a task request; worker and mission caps still apply |
+| `validation_policy` | no | `DOOM_VALIDATION_POLICY` | `default` (compile/pytest) or `python-quality` (also actual Ruff/strict mypy before task review and fresh final validation); tools must be installed on operator PATH |
+| `python_typecheck_target` | no | `DOOM_PYTHON_TYPECHECK_TARGET` | Confined relative source file/directory for strict mypy, default `.`; rejects absolute paths, parent traversal, options and shell text; pinned with the quality policy for workers/resume |
 | `provider_base_url` | no | `DOOM_PROVIDER_BASE_URL` | Inference provider base URL, `http(s)` only, no embedded credentials (default unset; required to construct the inference client) |
 | `nvidia_reasoning_effort` | no | `DOOM_NVIDIA_REASONING_EFFORT` | Reasoning effort for the NVIDIA route's request profile: `max` (default), `high`, or `none`; exact lowercase vocabulary, invalid values fail closed |
 | `openrouter_reasoning_effort` | no | `DOOM_OPENROUTER_REASONING_EFFORT` | Unset preserves the old OpenRouter payload; explicit `low`, `high`, or `max` enables internal reasoning on both OpenRouter routes and excludes reasoning text from responses |
