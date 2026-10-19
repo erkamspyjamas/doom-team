@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import doom_team.deliverable as deliverable_module
 from doom_team.deliverable import DeliverableError, DeliverableRepo
 
 
@@ -32,9 +33,27 @@ def test_unsafe_destinations_rejected(tmp_path: Path) -> None:
     with pytest.raises(DeliverableError, match="too broad"):
         DeliverableRepo.create("/")
     with pytest.raises(DeliverableError, match="source tree"):
-        DeliverableRepo.create(Path(__file__).resolve().parents[1] / "generated")
+        # The running package may be installed in a wheel while these tests
+        # live in an exported checkout. Protect the actual runtime source.
+        DeliverableRepo.create(Path(deliverable_module.__file__).resolve().parent / "generated")
     with pytest.raises(DeliverableError, match="parent"):
         DeliverableRepo.create(tmp_path / "missing" / "nested" / "project")
+
+
+def test_runtime_source_cannot_be_targeted_through_symlink(tmp_path: Path) -> None:
+    runtime_source = Path(deliverable_module.__file__).resolve().parent
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(runtime_source, target_is_directory=True)
+    with pytest.raises(DeliverableError, match="source tree"):
+        DeliverableRepo.create(alias / "generated")
+
+
+def test_independent_doom_team_checkout_remains_a_valid_deliverable(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    package = repo.path / "src/doom_team"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# independent deliverable\n")
+    assert DeliverableRepo.open(repo.path).path == repo.path
 
 
 def test_nonempty_destination_rejected(tmp_path: Path) -> None:

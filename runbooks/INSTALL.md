@@ -107,3 +107,17 @@ Flat Python fixtures and compile-only policies retain their previous path.
 This isolates package imports, not filesystem or process authority. Building
 and testing candidate code still has the documented subprocess guard's
 limitations; do not treat the virtual environment as a security sandbox.
+
+## Runtime source protection
+
+Deliverable destinations must remain outside the running Doom Team source
+tree. In an editable installation that tree belongs to the runtime checkout;
+in a wheel installation it belongs to the installed runtime. A symlink cannot
+bypass that protection. An independent checkout containing a Doom Team
+package may still be used as an explicitly selected deliverable.
+
+Tests of this boundary must target the executing package's source location,
+not assume the test file's checkout is the installed runtime. Before a paid
+self-development pilot, run the complete baseline suite both in editable
+mode and through the isolated installed-candidate validator. A failure in
+either mode blocks the pilot before planning or semantic retries begin.
