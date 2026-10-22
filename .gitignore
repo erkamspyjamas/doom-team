@@ -1,0 +1,27 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+
+# Runtime state and local environments
+.doom-state/
+.venv/
+venv/
+
+# Python build and quality-tool output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor and operating-system metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
