@@ -1,8 +1,39 @@
 # Doom Team — Current Status
 
-Last reviewed: 2026-10-19. This is a verified snapshot, not live monitoring.
+Last publication check: 2026-10-22. Runtime evidence below is the 2026-10-19
+snapshot unless explicitly dated otherwise. This is not live monitoring.
 Update it with the evidence and [TODO.md](TODO.md) whenever a bounded operation
 changes the runtime, its validation or a work item's status.
+
+## Public repository check — 2026-10-22
+
+- The repository is public at https://github.com/erkamspyjamas/doom-team.
+  The default branch is now `main`, replacing the legacy `openclaw/autopilot`
+  landing branch. Legacy branches and existing tags were retained.
+- Main through `1f2f7cbe1ad53da20f162244df2c8e2c1c2815f0` was pushed and
+  verified against the remote ref. Anonymous GitHub API/raw access confirmed
+  public visibility and byte-for-byte README equality. This includes the
+  previously local RC14 changes and native project policy; the RC14 tag itself
+  was not pushed by this operation. The older publication rows below remain
+  historical evidence, not the current main ref.
+- The new README covers the engine, portable setup, model roles, native
+  validation, recovery, usage, human decisions, and actual limits. Its 31 local
+  links/anchors and six Bash blocks passed structural/syntax checks. The example
+  configuration and manifest passed the installed engine's parsers without
+  provider calls or generated-code execution. `.gitignore` now excludes local
+  credentials, virtual environments, caches, builds and the documented state path.
+- Gitleaks 8.30.1 scanned 119 commits reachable from all local refs with no
+  findings before publication. This is a scanner result, not a guarantee that
+  every possible sensitive value is detectable. Verification evidence remains
+  on the operator host in `runtime/doom-team-publication-20261022/`.
+- [Publication CI](https://github.com/erkamspyjamas/doom-team/actions/runs/39831718290)
+  **failed at lint in both jobs**: eight E721 exact-type comparisons and three
+  E501 test line lengths. Type and test stages did not execute. These are
+  existing source/test issues; publication changed documentation and ignores,
+  not engine behavior. No fresh full-suite pass is claimed. The earlier pinned
+  evidence below is retained with its original scope.
+- The package license declaration remains Proprietary. Public visibility does
+  not add an open-source license. No runtime restart or paid mission was launched.
 
 ## Runtime and publication
 

@@ -22,6 +22,10 @@ broader real-project reliability remain open work. See [current evidence and
 limits](STATUS.md) and the [prioritized work list](TODO.md); dated publication
 entries there describe historical snapshots, not live repository state.
 
+**CI status:** the publication check found lint errors in the existing source and
+tests; type-checking and tests did not run in that CI attempt. Details are recorded
+in [STATUS.md](STATUS.md#public-repository-check--2026-10-22).
+
 [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Operations](#operating-a-mission) · [Documentation](#documentation) ·
 [Limits](#security-and-current-limits)
